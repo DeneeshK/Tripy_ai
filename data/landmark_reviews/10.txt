@@ -1,0 +1,21 @@
+ID: 10
+NAME: Veli Tourist Village
+CATEGORY: Picnic Spot / Estuary / Family Recreation
+
+[RAW_REVIEW_REPOSITORY]
+
+"Serene surroundings with cultural charm. Visited in Sept 2025; enjoyed a lively stage program (ganamela) that lasted until 9 PM. The vibe is very peaceful in the evenings. Sept 2025"
+
+"The confluence of Veli Lake and the Arabian Sea. A thin strip of sand separates the freshwater from the ocean—a very rare geographic sight. The floating bridge connecting the village to the beach is the star attraction. May 2025"
+
+"BOATING ADVICE: Pedal boats and rowboats are available. Speedboats are thrilling but pricey (approx. Rs 1000 for 4 people). KTDC-run boating is reliable, though private operators also exist in the 'Adventure Zone.' 2025"
+
+"KIDS & FAMILY: Great for children aged 2-12. Includes a miniature train, a separate children's park, and massive sculptures (like the giant Conch Shell 'Shanghu') that kids can climb. May 2025"
+
+"CRITICAL DINING WARNING: The floating restaurant (Flotilla) has a history of poor service and hygiene issues. Reviewers mention bad odors, long wait times (30+ mins for tea), and rude staff. Suggest sticking to small Milma stalls for ice cream or snacks instead. Jan 2021/Updated 2025"
+
+"Adventure Zone: Offers ziplining, archery, trampoline, and horse riding on the beach. Note: Horse riding is unorganized; be prepared to haggle on the price. 2024"
+
+"Logistics: Entry fee is very low (historically Rs 5, recently updated to Rs 20-30). Open from 8:00 AM to 6:30 PM. Easily reachable by bus from Trivandrum city; located near Kochuveli railway station. 2024"
+
+"Renovation Note: The village underwent significant renovations between 2020 and 2022. It is now much cleaner and better maintained than the pre-2020 reports suggest. Dec 2021"

@@ -1,0 +1,31 @@
+ID: 2
+NAME: Napier Museum
+CATEGORY: History & Art Museum
+
+[RAW_REVIEW_REPOSITORY]
+
+"Great museum with religious artefacts through the ages. Relatively small but has statues from various periods. Serene and interesting. Jan 2026"
+
+"Well Maintained, the location is good, just near to the Zoo entrance. The atmosphere was very pleasant. It is open from morning 10 AM to 5 PM. May 2025"
+
+"Excellent dive into our history and heritage. Courteous staff. Easy access. Ample parking available. Museum annexe can also be visited with same entry ticket. Nov 2024"
+
+"Visited on a very wet October morning. Ticket office is not at the entrance but around the side! Interesting collection of artifacts and religious iconography. Download the free app for in-depth descriptions. If raining, bring an umbrella; the walk from the car drop-off to the museum is long enough to get soaked. Oct 2024"
+
+"A landmark surrounded by lush greenery; a walk in the garden is a must. Building is a unique mix of Chinese, Kerala, and Mughal styles. Contains royal artifacts, bronze & stone idols, temple chariot, and ivory carvings. Open 10 AM-5 PM except Mondays and govt holidays. Ticket counter is on the side and takes effort to locate—no boards to guide you. Tickets nominally priced at ₹20. May 2024"
+
+"As a foreigner it’s 200 rupees entry. Maybe the worst museum I ever visited. Looks stuck in time. Dusty relics in old glass cases with no real info. Descriptions are pathetic (e.g., 'mirror' or 'carving of Vishnu'). Nice gardens outside though; suggest sitting outside with a cold drink instead. Mar 2024"
+
+"Entry charged a paltry 20 rupees per head. Amazing artefacts but maintenance is non-existent. Ancient Almonard fans covered in cobwebs. Majority of spotlights do not work. Needs better administration. Feb 2024"
+
+"Traditional Kerala Architecture style combined with Gothic. Long corridors are a treat for an enjoyable walk gazing on various artefacts. A must visit for museum freaks. Dec 2023"
+
+"Angry and discontented staff. Do not go on the weekend; it is packed to the rafters. Good collection of masks. Sept 2023"
+
+"Building is about 150 years old but artifacts are 1000-1200 yrs. Has its own app and audio guide downloadable—carry your headphones. June 2023"
+
+"Poor curation. Difficult to see exhibits because of inadequate and incorrectly placed lighting. Staff is lackadaisical. Administrative area is cluttered. March 2022"
+
+"I had to pay 150 rupees for parking and only 40 rupees for entrance. Not much to see except kings and gods. One has to buy a separate ticket for other parts of museum. Feb 2020"
+
+"Mondays are holiday. Wednesdays open only in the afternoon (after 1 PM). Photography strictly prohibited inside. History students will benefit, but be careful of the timing. Sept 2019"

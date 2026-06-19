@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+chromadb==1.5.9
+sentence-transformers
+pandas
+ortools==9.15.6755
+groq

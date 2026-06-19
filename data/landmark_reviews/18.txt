@@ -1,0 +1,15 @@
+ID: 18
+NAME: Indian Coffee House (Maveli Cafe)
+CATEGORY: Historic Cafe / Budget Dining
+
+[RAW_REVIEW_REPOSITORY]
+
+"An architectural wonder in Feb 2026. Eating here is an experience because of the spiral design by Laurie Baker. No stairs, just a ramp that takes you past tables. It feels like a piece of living history. Feb 2026"
+
+"FOOD & DRINK: The cutlets are legendary, mostly because of the bright red beetroot filling. The filter coffee is strong and consistent. It’s not 'gourmet,' but it is reliable and incredibly cheap for the portion size. Jan 2025"
+
+"SERVICE: The waiters in their starch-white uniforms and turbans are as iconic as the building. Service is brisk—don't expect to linger for hours during peak lunch times. 2025"
+
+"MAINTENANCE: The building shows its age, and cleanliness can be hit-or-miss depending on the crowd, but that’s part of the 'rustic' charm for many. It’s a government-run cooperative, so don't expect luxury. Oct 2024"
+
+"LOCAL TIP: Try to get a seat near the small windows for a view of the busy Thampanoor street below. It’s the best spot to watch the city move while you have your coffee. 2024"

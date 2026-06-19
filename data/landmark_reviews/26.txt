@@ -1,0 +1,17 @@
+ID: 26
+NAME: Cafe Sarwaa
+CATEGORY: Lifestyle Cafe / Boutique Dining
+
+[RAW_REVIEW_REPOSITORY]
+
+"A leafy sanctuary in Feb 2026. The atmosphere here is unrivaled if you're looking for a quiet place to read or catch up with a friend. Sitting in the courtyard surrounded by plants makes you forget you're in the middle of Vazhuthacaud. Feb 2026"
+
+"FOOD & DRINK: The cold coffee and the blueberry cheesecake are my absolute go-tos. The menu is mostly light bites and continental dishes. It’s not a place for a heavy traditional meal, but perfect for a sophisticated brunch or evening snack. Jan 2026"
+
+"THE STORE: Sarwaa itself is a treasure trove. They have amazing handmade pottery and ethnic wear. It’s great to browse the shop while waiting for your order. The staff are very polite and never pressure you to hurry. 2025"
+
+"AMBIANCE: Very 'Instagrammable' with its rustic decor and green backdrop. It has a very calming, zen-like quality. Note: Since it's mostly outdoor/semi-outdoor, it can get a bit warm during peak summer afternoons, but the fans and plants help. Oct 2025"
+
+"LOGISTICS: Located near the All India Radio station. Parking is limited to the roadside, which can be tricky during peak hours. Best to visit during weekdays for a more peaceful experience. 2025"
+
+"LOCAL TIP: Check their social media for occasional weekend pop-ups or craft workshops. It’s a great way to meet the local creative community. 2024"

@@ -1,0 +1,299 @@
+"""
+search.py  --  semantic search + itinerary planning.
+
+Keeps original logic from search_agent.py:
+  - check_availability(): unchanged
+  - smart_search(): reads all fields from Chroma metadata, same post-processing
+  - plan_itinerary(): same structure but travel time comes from OSRM (real roads)
+    instead of haversine + flat 25 km/h, and uses OR-Tools instead of greedy loop
+
+Bug fixed vs original: Chroma query now includes "distances" so relevance
+scores are returned and used -- the original only asked for "metadatas" and
+"documents", silently discarding the similarity ranking.
+"""
+
+import math
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+
+import chromadb
+from sentence_transformers import SentenceTransformer
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from engine.distance_matrix import time_matrix_with_fallback
+from engine.itinerary_engine import Place, plan_itinerary as ortools_plan
+from engine.hours import resolve_for_day, best_window_in_span
+
+VDB_PATH   = Path(__file__).resolve().parent.parent / "trivandrum_vdb"
+COLLECTION = "landmark_repository"
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+_model: Optional[SentenceTransformer] = None
+
+
+def _get_model() -> SentenceTransformer:
+    global _model
+    if _model is None:
+        _model = SentenceTransformer(MODEL_NAME)
+    return _model
+
+
+def _get_collection():
+    client = chromadb.PersistentClient(path=str(VDB_PATH))
+    try:
+        return client.get_collection(name=COLLECTION)
+    except Exception:
+        raise RuntimeError(
+            f"Vector store not found at {VDB_PATH}. "
+            "Run `python -m rag.ingest` first."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Availability check (identical to original check_availability)
+# ---------------------------------------------------------------------------
+
+def check_availability(
+    open_hours_str: str,
+    closed_day: str,
+    day_name: str,
+    window_start_str: str,
+    window_end_str: str,
+) -> dict:
+    if closed_day and closed_day != "None" and day_name == closed_day:
+        return {"status": "Closed Today", "opens_at": None,
+                "note": f"Closed every {closed_day}"}
+
+    if not open_hours_str or open_hours_str in ("Unknown", "None"):
+        return {"status": "Unknown", "opens_at": None, "note": "Hours not available"}
+
+    try:
+        win_start = datetime.strptime(window_start_str, "%H:%M")
+        win_end   = datetime.strptime(window_end_str,   "%H:%M")
+    except ValueError:
+        return {"status": "Unknown", "opens_at": None, "note": "Invalid window"}
+
+    open_now       = False
+    opens_later_at = None
+
+    for period in open_hours_str.split(";"):
+        period = period.strip()
+        try:
+            start_str, end_str = period.split("-")
+            p_start = datetime.strptime(start_str.strip(), "%H:%M")
+            p_end   = datetime.strptime(end_str.strip(),   "%H:%M")
+        except Exception:
+            continue
+
+        overlap_start = max(p_start, win_start)
+        overlap_end   = min(p_end, win_end)
+        if overlap_start >= overlap_end:
+            continue
+
+        if p_start <= win_start <= p_end:
+            open_now = True
+            break
+
+        if p_start > win_start:
+            if opens_later_at is None or p_start < opens_later_at:
+                opens_later_at = p_start
+
+    if open_now:
+        return {"status": "Open Now", "opens_at": None,
+                "note": "Open during your trip window"}
+    if opens_later_at:
+        t = opens_later_at.strftime("%I:%M %p")
+        return {"status": "Opens Later", "opens_at": opens_later_at.strftime("%H:%M"),
+                "note": f"Opens at {t} — plan to visit after that"}
+    return {"status": "Closed", "opens_at": None,
+            "note": f"Not open during your trip window ({window_start_str}–{window_end_str})"}
+
+
+# ---------------------------------------------------------------------------
+# Smart search (same as original but includes distances + relevance)
+# ---------------------------------------------------------------------------
+
+def smart_search(
+    user_query: str,
+    user_lat: float,
+    user_lng: float,
+    target_time: str = None,
+    target_day: str = None,
+    trip_end_time: str = None,
+    n_results: int = 10,
+) -> List[Dict]:
+    current_time = target_time or datetime.now().strftime("%H:%M")
+    end_time     = trip_end_time or "23:59"
+
+    if target_day is None:
+        day_name = datetime.now().strftime("%A")
+    elif target_day.lower() == "tomorrow":
+        day_name = (datetime.now() + timedelta(days=1)).strftime("%A")
+    else:
+        day_name = target_day.strip().capitalize()
+
+    model  = _get_model()
+    vector = model.encode(user_query).tolist()
+
+    collection = _get_collection()
+    results = collection.query(
+        query_embeddings=[vector],
+        n_results=n_results,
+        include=["metadatas", "documents", "distances"],   # distances was missing in original
+    )
+
+    recommendations = []
+    for i in range(len(results["ids"][0])):
+        meta     = results["metadatas"][0][i]
+        distance = results["distances"][0][i]
+        # Convert Chroma L2 distance to a 0-1 relevance score
+        relevance = round(1.0 / (1.0 + distance), 3)
+
+        dist_km = math.sqrt(
+            (user_lat - meta["lat"]) ** 2 + (user_lng - meta["lng"]) ** 2
+        ) * 111  # rough km, OSRM handles real routing
+
+        avail = check_availability(
+            meta.get("regular_hours", "Unknown"),
+            meta.get("closed_on", "None"),
+            day_name,
+            current_time,
+            end_time,
+        )
+
+        recommendations.append({
+            "id":               results["ids"][0][i],
+            "name":             meta["name"],
+            "lat":              meta["lat"],
+            "lng":              meta["lng"],
+            "category":         meta.get("category", ""),
+            "relevance":        relevance,
+            "distance_km":      round(dist_km, 2),
+            "status":           avail["status"],
+            "opens_at":         avail["opens_at"],
+            "availability_note":avail["note"],
+            "vibe":             meta.get("vibe_tags", ""),
+            "regular_hours":    meta.get("regular_hours", "Unknown"),
+            "special_hours":    meta.get("special_hours", "None"),
+            "closed_on":        meta.get("closed_on", "None"),
+            "avg_duration":     meta.get("avg_duration", 1.0),
+            "trip_window":      f"{day_name} {current_time}–{end_time}",
+        })
+
+    return recommendations
+
+
+# ---------------------------------------------------------------------------
+# Itinerary planner  (OR-Tools with OSRM travel times)
+# ---------------------------------------------------------------------------
+
+def _resolve_weekday_index(day_name: str) -> int:
+    try:
+        return WEEKDAYS.index(day_name.capitalize())
+    except ValueError:
+        return datetime.now().weekday()
+
+
+def plan_itinerary(
+    candidates: List[Dict],
+    start_lat: float,
+    start_lng: float,
+    trip_start: str,
+    trip_end: str,
+) -> List[Dict]:
+    """
+    Wraps OR-Tools solver. Input/output format same as original plan_itinerary
+    so the FastAPI layer and tests don't need to change.
+    """
+    def to_mins(t):
+        h, m = map(int, t.split(":"))
+        return h * 60 + m
+
+    def to_hhmm(mins):
+        mins = int(mins)
+        return f"{mins // 60:02d}:{mins % 60:02d}"
+
+    trip_start_mins = to_mins(trip_start)
+    trip_end_mins   = to_mins(trip_end)
+
+    # Determine weekday from trip_window field on first candidate, fallback today
+    weekday_index = datetime.now().weekday()
+    if candidates:
+        tw = candidates[0].get("trip_window", "")
+        day_part = tw.split(" ")[0] if tw else ""
+        if day_part in WEEKDAYS:
+            weekday_index = WEEKDAYS.index(day_part)
+
+    # Convert candidates to Place objects for the OR-Tools engine
+    usable = [c for c in candidates if c["status"] not in ("Closed Today", "Closed")]
+    places: List[Place] = []
+    for c in usable:
+        # Re-resolve opening window using the engine's hours module
+        # (handles special_hours that original greedy loop didn't check)
+        from engine.hours import resolve_for_day, best_window_in_span
+        resolved = resolve_for_day(
+            c.get("closed_on", "None"),
+            c.get("regular_hours", "Unknown"),
+            c.get("special_hours", "None"),
+            weekday_index,
+        )
+        window = best_window_in_span(resolved, trip_start_mins, trip_end_mins)
+
+        places.append(Place(
+            id=c["id"],
+            name=c["name"],
+            lat=c["lat"],
+            lng=c["lng"],
+            duration_min=round(float(c.get("avg_duration", 1.0)) * 60),
+            relevance=c.get("relevance", 1.0),
+            window=window,
+        ))
+
+    result = ortools_plan(
+        home=(start_lat, start_lng),
+        trip_start_min=trip_start_mins,
+        trip_end_min=trip_end_mins,
+        candidates=places,
+        time_matrix_fn=time_matrix_with_fallback,
+    )
+
+    # Build candidate lookup by id for skipped reasons
+    cand_by_id = {c["id"]: c for c in candidates}
+
+    output = []
+    for i, stop in enumerate(result.stops):
+        c = cand_by_id.get(stop.place.id, {})
+        output.append({
+            "order":             i + 1,
+            "name":              stop.place.name,
+            "lat":               stop.place.lat,
+            "lng":               stop.place.lng,
+            "arrive_at":         to_hhmm(stop.arrival_min),
+            "visit_starts":      to_hhmm(stop.arrival_min),
+            "visit_ends":        to_hhmm(stop.departure_min),
+            "avg_duration_hrs":  stop.place.duration_min / 60,
+            "relevance":         stop.place.relevance,
+            "vibe":              c.get("vibe", ""),
+            "status":            c.get("status", ""),
+            "availability_note": c.get("availability_note", ""),
+            "skipped_reason":    None,
+        })
+
+    for place, reason in result.skipped:
+        c = cand_by_id.get(place.id, {})
+        output.append({
+            "order":          None,
+            "name":           place.name,
+            "lat":            place.lat,
+            "lng":            place.lng,
+            "relevance":      place.relevance,
+            "vibe":           c.get("vibe", ""),
+            "status":         c.get("status", "Skipped"),
+            "skipped_reason": reason,
+        })
+
+    return output

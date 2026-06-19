@@ -1,0 +1,37 @@
+ID: 1
+NAME: Sree Padmanabhaswamy Temple
+REVIEW_COUNT: 20+ (Recent 2025-2026)
+
+[CORE_INTELLIGENCE_SUMMARY]
+A massive 18ft reclining Vishnu idol viewed through 3 doors. Highly spiritual but strictly regulated. Expect 2-4 hour wait times in general lines. VIP options are essential for time-sensitive travelers.
+
+[PRACTICAL_LOGISTICS]
+- TICKETING: 
+    * General: Free (3-5 hour wait).
+    * Special: ₹50 (Cuts queue significantly, ~45-60 min total).
+    * VIP: ₹500 (North Entrance, ~20-30 min wait, includes prasad/flowers/photo, allows closer access to sanctum).
+- DRESS_CODE: 
+    * Men: Mundu/Dhoti ONLY. No shirts, no vests, no T-shirts. Angavastram (shoulder cloth) allowed.
+    * Women: Saree or Set-mundu. If in pants/suits/leggings, a Dhoti MUST be wrapped over them.
+    * Purchase: Available outside for ₹60 to ₹225.
+- STORAGE: 
+    * Phones/Bags: Cloakroom available for ₹10. 
+    * Footwear: Disorganized; no proper stands mentioned, often left in shops or vehicles.
+
+[CRITICAL_ALERTS_FOR_AUDITOR_AGENT]
+- PARKING: "Big Issue." Strongly advise users to take an Auto/Taxi to the East Fort entrance.
+- INFANTS/SENIORS: Highly recommend the ₹500 North Entrance ticket.
+- HYDRATION: Water coolers are available inside the queue areas.
+- LIGHTING: No artificial light inside. Early morning darshans (4 AM) are dimly lit by oil lamps; alert users to be highly attentive to see the idol.
+- CROWD_MANAGEMENT: Staff can be pushy/rude during peak hours; warn families with toddlers.
+
+[VIBE_MARKERS]
+- "Time Travel": Feels like 200 years ago. No electronics, oil-lamp lighting, ancient granite carvings.
+- "The Three Doors": 1st (Head/Linga), 2nd (Navel/Brahma), 3rd (Feet).
+- "Prasad": Payasam (milk pudding) in tins for ₹100 is the top-rated souvenir.
+
+[RAW_QUOTES_FOR_NLG]
+- "Ladies in suits must still wear a dhoti over them."
+- "Witnessed the beautiful sunset behind the temple... spiritual atmosphere."
+- "There are many pillars inside, so you need to look carefully to get a good view."
+- "Lottery sellers outside try to capitalise on the sentiments; stay focused."
