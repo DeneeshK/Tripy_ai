@@ -74,20 +74,24 @@ def plan(req: PlanRequest):
         target_day   = req.day,
         trip_end_time= req.trip_end,
     )
-    itinerary = plan_itinerary(
+    result = plan_itinerary(
         candidates  = candidates,
         start_lat   = req.lat,
         start_lng   = req.lng,
         trip_start  = req.trip_start,
         trip_end    = req.trip_end,
     )
-    stops   = [s for s in itinerary if s["skipped_reason"] is None]
-    skipped = [s for s in itinerary if s["skipped_reason"] is not None]
+    stops, skipped = result["stops"], result["skipped"]
 
     # Build coordinate list for the map (home → stops → home)
     coords = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in stops]
 
-    return {"stops": stops, "skipped": skipped, "coords": coords}
+    return {
+        "stops": stops,
+        "skipped": skipped,
+        "coords": coords,
+        "used_distance_fallback": result["used_distance_fallback"],
+    }
 
 
 # ── /api/route ───────────────────────────────────────────────────────────────
@@ -117,10 +121,30 @@ def get_route(coords: str):
 
 SYSTEM_PROMPT = """You are Tripy, a friendly trip-planning assistant for Trivandrum, Kerala.
 
-When the user describes what they want to see or do, call the plan_my_day tool.
-After getting the result, explain the plan warmly -- walk through each stop with timing,
-say why skipped places didn't make it, and mention if travel times are estimated.
-Keep it conversational, like a local friend helping plan the day."""
+WHEN TO ASK VS WHEN TO BUILD:
+Only ask a clarifying question if the request is genuinely ambiguous (e.g. they
+gave no sense of duration or interest at all). If they've given you enough to
+work with -- a time window (even rough) and some idea of what they want to see
+-- call plan_my_day immediately. Don't ask about things you can reasonably
+assume (e.g. default to "today" if no day is mentioned). At most one question,
+only when truly needed -- never a checklist.
+
+AFTER THE PLAN COMES BACK, explain it like a knowledgeable local friend:
+  - Walk through each stop in order with its visit window, and for each one,
+    give a short, specific reason it was picked (what it matches about their
+    request, not just "it's nearby").
+  - Then cover what got left out, grouped naturally:
+      - Anything closed all day during their trip window -- say so plainly.
+      - Anything that didn't fit the schedule -- explain briefly that it lost
+        out on time/relevance tradeoff to the places that made the cut, and
+        that it's still worth visiting another time.
+    Don't just list names -- use the actual reason you were given for each one.
+  - If used_distance_fallback is true, mention once that travel times are
+    estimated rather than from live road data.
+
+FORMATTING: you can use markdown -- **bold** for place names, bullet points
+for lists. Keep it warm and conversational, not a report.
+"""
 
 PLAN_TOOL = {
     "type": "function",
@@ -149,58 +173,92 @@ async def chat(req: ChatRequest):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += [{"role": m.role, "content": m.content} for m in req.messages]
 
-    # First call -- may trigger tool use. Not streamed: we need the full
-    # tool_calls list before we can run plan_my_day and continue the turn.
-    first = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=messages,
-        tools=[PLAN_TOOL],
-        tool_choice="auto",
-        temperature=0.3,
-    )
+    try:
+        first = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            tools=[PLAN_TOOL],
+            tool_choice="auto",
+            temperature=0.3,
+        )
+    except Exception as e:
+        # Fails before any streaming response has started, so a normal
+        # HTTP error is safe here -- the frontend will see it cleanly.
+        raise HTTPException(502, f"Groq request failed: {e}")
+
     msg = first.choices[0].message
-    messages.append(msg.model_dump(exclude_none=True))
-
     tool_calls = msg.tool_calls or []
-    for tc in tool_calls:
-        args = json.loads(tc.function.arguments)
 
-        candidates = smart_search(
-            user_query    = args["query"],
-            user_lat      = req.lat,
-            user_lng      = req.lng,
-            target_time   = args.get("trip_start"),
-            target_day    = args.get("day"),
-            trip_end_time = args.get("trip_end"),
-        )
-        itinerary = plan_itinerary(
-            candidates = candidates,
-            start_lat  = req.lat,
-            start_lng  = req.lng,
-            trip_start = args.get("trip_start", "09:00"),
-            trip_end   = args.get("trip_end",   "18:00"),
-        )
+    # Built explicitly rather than via msg.model_dump(exclude_none=True),
+    # which silently drops the "content" key when it's None -- Groq's API
+    # then rejects the next call as malformed, and because that failure
+    # happens mid-stream (after headers are already sent) it doesn't surface
+    # as an error, it just hangs the connection open with nothing coming
+    # through. This is the bug behind the chat going silent.
+    assistant_msg = {"role": "assistant", "content": msg.content}
+    if tool_calls:
+        assistant_msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
+            for tc in tool_calls
+        ]
+    messages.append(assistant_msg)
+
+    for tc in tool_calls:
+        try:
+            args = json.loads(tc.function.arguments)
+            candidates = smart_search(
+                user_query    = args["query"],
+                user_lat      = req.lat,
+                user_lng      = req.lng,
+                target_time   = args.get("trip_start"),
+                target_day    = args.get("day"),
+                trip_end_time = args.get("trip_end"),
+            )
+            result = plan_itinerary(
+                candidates = candidates,
+                start_lat  = req.lat,
+                start_lng  = req.lng,
+                trip_start = args.get("trip_start", "09:00"),
+                trip_end   = args.get("trip_end",   "18:00"),
+            )
+            tool_content = json.dumps(result)
+        except Exception as e:
+            # Surface the failure to the model instead of crashing the
+            # request -- it can apologise and explain rather than the
+            # connection just going dead.
+            tool_content = json.dumps({"error": f"Planning failed: {e}"})
 
         messages.append({
             "role":         "tool",
             "tool_call_id": tc.id,
-            "content":      json.dumps(itinerary),
+            "name":         tc.function.name,  # required by Groq's tool-call contract; was missing
+            "content":      tool_content,
         })
 
-    # Second call -- narrate the plan, streamed back to the client.
     def stream_gen():
-        stream = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            stream=True,
-        )
-        for chunk in stream:
-            token = chunk.choices[0].delta.content
-            if token:
-                yield token
+        try:
+            stream = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                stream=True,
+            )
+            for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if token:
+                    yield token
+        except Exception as e:
+            # Headers are already sent by the time we're here, so this is
+            # the only way left to tell the user something went wrong --
+            # otherwise the connection just hangs with no data, which is
+            # exactly what was happening before this fix.
+            yield f"\n\n⚠️ I ran into a problem putting that into words: {e}"
 
     if tool_calls:
         return StreamingResponse(stream_gen(), media_type="text/plain")
 
-    # No tool was called -- direct reply, no streaming needed.
+    # No tool was called -- direct reply (e.g. a clarifying question), no streaming needed.
     return {"reply": msg.content or ""}

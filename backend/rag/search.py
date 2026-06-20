@@ -204,10 +204,18 @@ def plan_itinerary(
     start_lng: float,
     trip_start: str,
     trip_end: str,
-) -> List[Dict]:
+) -> Dict:
     """
-    Wraps OR-Tools solver. Input/output format same as original plan_itinerary
-    so the FastAPI layer and tests don't need to change.
+    Wraps OR-Tools solver. Returns {"stops": [...], "skipped": [...],
+    "used_distance_fallback": bool}.
+
+    Bug fixed vs the previous version of this wrapper: candidates with
+    status "Closed Today"/"Closed" used to be filtered out before ever
+    reaching the solver, which meant they never appeared in the output
+    at all -- not as a stop, not as a skip reason, just silently gone.
+    The chat layer had no way to tell the user "X was closed today" because
+    it never even knew X existed. Those candidates are now surfaced as
+    skipped entries directly, with the real reason from check_availability.
     """
     def to_mins(t):
         h, m = map(int, t.split(":"))
@@ -228,13 +236,31 @@ def plan_itinerary(
         if day_part in WEEKDAYS:
             weekday_index = WEEKDAYS.index(day_part)
 
-    # Convert candidates to Place objects for the OR-Tools engine
-    usable = [c for c in candidates if c["status"] not in ("Closed Today", "Closed")]
+    skipped_output: List[Dict] = []
+
+    # Candidates that are closed for the whole trip window never get a
+    # window to give the solver -- surface them as skipped right here
+    # instead of silently dropping them.
+    usable = []
+    for c in candidates:
+        if c["status"] in ("Closed Today", "Closed"):
+            skipped_output.append({
+                "order":          None,
+                "name":           c["name"],
+                "lat":            c["lat"],
+                "lng":            c["lng"],
+                "relevance":      c.get("relevance", 1.0),
+                "vibe":           c.get("vibe", ""),
+                "status":         c["status"],
+                "skipped_reason": c.get("availability_note", c["status"]),
+            })
+        else:
+            usable.append(c)
+
     places: List[Place] = []
     for c in usable:
         # Re-resolve opening window using the engine's hours module
         # (handles special_hours that original greedy loop didn't check)
-        from engine.hours import resolve_for_day, best_window_in_span
         resolved = resolve_for_day(
             c.get("closed_on", "None"),
             c.get("regular_hours", "Unknown"),
@@ -264,10 +290,10 @@ def plan_itinerary(
     # Build candidate lookup by id for skipped reasons
     cand_by_id = {c["id"]: c for c in candidates}
 
-    output = []
+    stops_output = []
     for i, stop in enumerate(result.stops):
         c = cand_by_id.get(stop.place.id, {})
-        output.append({
+        stops_output.append({
             "order":             i + 1,
             "name":              stop.place.name,
             "lat":               stop.place.lat,
@@ -280,12 +306,11 @@ def plan_itinerary(
             "vibe":              c.get("vibe", ""),
             "status":            c.get("status", ""),
             "availability_note": c.get("availability_note", ""),
-            "skipped_reason":    None,
         })
 
     for place, reason in result.skipped:
         c = cand_by_id.get(place.id, {})
-        output.append({
+        skipped_output.append({
             "order":          None,
             "name":           place.name,
             "lat":            place.lat,
@@ -296,4 +321,8 @@ def plan_itinerary(
             "skipped_reason": reason,
         })
 
-    return output
+    return {
+        "stops": stops_output,
+        "skipped": skipped_output,
+        "used_distance_fallback": result.used_distance_fallback,
+    }
