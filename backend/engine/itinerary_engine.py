@@ -68,6 +68,7 @@ class Place:
     relevance: float = 1.0          # 0..1, from the vector search ranking
     window: Optional[Tuple[int, int]] = None  # (open_min, close_min) today, already resolved
     is_anchor: bool = False         # must-visit, e.g. a booked ticket
+    hours_source: str = "regular"   # "regular" | "special" | "closed" -- for explaining scheduling to the user
 
 
 @dataclass
@@ -180,6 +181,7 @@ def plan_itinerary(
 
     visited_nodes = set()
     index = routing.Start(0)
+    route_indices = [0]  # matrix node indices in visit order, starting from home
     while not routing.IsEnd(index):
         node = manager.IndexToNode(index)
         if 1 <= node <= n_places:
@@ -187,12 +189,48 @@ def plan_itinerary(
             arrival = solution.Value(time_dim.CumulVar(index))
             result.stops.append(Stop(place=p, arrival_min=arrival, departure_min=arrival + p.duration_min))
             visited_nodes.add(node)
+            route_indices.append(node)
         index = solution.Value(routing.NextVar(index))
 
+    avg_chosen_relevance = (
+        sum(s.place.relevance for s in result.stops) / len(result.stops) if result.stops else 0.0
+    )
+
     for node, p in enumerate(feasible, start=1):
-        if node not in visited_nodes:
-            result.skipped.append(
-                (p, "dropped by the planner -- fitting it in cost more travel time than it was worth versus your other matches")
+        if node in visited_nodes:
+            continue
+
+        # Real marginal cost: the cheapest extra travel time it would take to
+        # slot this place into the route that was actually chosen, tried at
+        # every possible position (between each pair of consecutive stops,
+        # and appended after the last one). This replaces a single boilerplate
+        # string with a number computed from the same matrix the solver used.
+        candidates_cost = []
+        for k in range(len(route_indices) - 1):
+            a, b = route_indices[k], route_indices[k + 1]
+            cost = matrix[a][node] + service_min[node] + matrix[node][b] - matrix[a][b]
+            candidates_cost.append(cost)
+        last = route_indices[-1]
+        candidates_cost.append(matrix[last][node] + service_min[node])  # appended at the end
+        insertion_min = round(min(candidates_cost))
+
+        if insertion_min <= 15:
+            reason = (
+                f"barely would have added any travel time (about {insertion_min} min), "
+                f"but it wasn't as strong a match as the places you're actually visiting"
             )
+        elif p.relevance >= avg_chosen_relevance:
+            reason = (
+                f"just as good a match as what made the cut, but fitting it in would have added "
+                f"about {insertion_min} extra minutes of travel -- not enough room without "
+                f"shortening another stop"
+            )
+        else:
+            reason = (
+                f"a lower-priority match than your other picks, and fitting it in would have added "
+                f"about {insertion_min} minutes of travel that was better spent on your higher-relevance stops"
+            )
+
+        result.skipped.append((p, reason))
 
     return result

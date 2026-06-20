@@ -150,6 +150,7 @@ def smart_search(
     for i in range(len(results["ids"][0])):
         meta     = results["metadatas"][0][i]
         distance = results["distances"][0][i]
+        doc      = results["documents"][0][i] if results.get("documents") else ""
         # Convert Chroma L2 distance to a 0-1 relevance score
         relevance = round(1.0 / (1.0 + distance), 3)
 
@@ -165,6 +166,13 @@ def smart_search(
             end_time,
         )
 
+        # The document is "Place: {name}. Vibe: {tags}. Insight: {review_text}" --
+        # pull just the review portion so the LLM has real visitor-review material
+        # to describe the place with, instead of inventing details from its own
+        # general knowledge (which happened to be accurate last time, but that's
+        # luck, not grounding -- same blind spot as the missing distances field).
+        insight = doc.split("Insight: ", 1)[-1].strip() if "Insight: " in doc else ""
+
         recommendations.append({
             "id":               results["ids"][0][i],
             "name":             meta["name"],
@@ -177,6 +185,7 @@ def smart_search(
             "opens_at":         avail["opens_at"],
             "availability_note":avail["note"],
             "vibe":             meta.get("vibe_tags", ""),
+            "insight":          insight,
             "regular_hours":    meta.get("regular_hours", "Unknown"),
             "special_hours":    meta.get("special_hours", "None"),
             "closed_on":        meta.get("closed_on", "None"),
@@ -196,6 +205,54 @@ def _resolve_weekday_index(day_name: str) -> int:
         return WEEKDAYS.index(day_name.capitalize())
     except ValueError:
         return datetime.now().weekday()
+
+
+def _fmt(mins: int) -> str:
+    mins = int(mins)
+    return f"{mins // 60:02d}:{mins % 60:02d}"
+
+
+def _explain_timing(c: dict, place: Place, stop, weekday_name: str, trip_start_mins: int, trip_end_mins: int) -> str:
+    """
+    Real, computed explanation for why a stop is scheduled at this specific
+    time, grounded in its actual resolved opening window -- not invented
+    narrative. Same fix as the one applied to skip reasons: give the model
+    real facts to relay instead of letting it improvise something plausible-
+    sounding from a generic status field.
+    """
+    if place.window is None:
+        return ""
+    open_m, close_m = place.window
+
+    # Hours fully cover the whole trip window -- they genuinely didn't
+    # constrain this stop's timing at all. Say so honestly rather than
+    # implying a constraint that wasn't real.
+    if open_m <= trip_start_mins and close_m >= trip_end_mins:
+        return (
+            f"Open right through your whole day today ({_fmt(open_m)}-{_fmt(close_m)}), "
+            f"so the timing here came down to your route, not its hours."
+        )
+
+    if place.hours_source == "special":
+        regular = c.get("regular_hours", "")
+        contrast = f" -- its usual hours are {regular}" if regular and regular != "Unknown" else ""
+        return (
+            f"{weekday_name}s, {place.name} keeps special hours, {_fmt(open_m)}-{_fmt(close_m)}{contrast}, "
+            f"so the visit is scheduled inside that window."
+        )
+
+    arrived_at_open  = (stop.arrival_min - open_m) <= 10
+    left_near_close  = (close_m - stop.departure_min) <= 15
+    opens_after_trip_start = open_m > trip_start_mins
+    closes_before_trip_end = close_m < trip_end_mins
+
+    if closes_before_trip_end and left_near_close:
+        return f"Closes at {_fmt(close_m)} today, earlier than the rest of your day, so the visit is timed to finish before then."
+    if opens_after_trip_start and arrived_at_open:
+        return f"Doesn't open until {_fmt(open_m)}, so this is the earliest it could be scheduled today."
+    if closes_before_trip_end or opens_after_trip_start:
+        return f"Open {_fmt(open_m)}-{_fmt(close_m)} today, so the visit is scheduled inside that window."
+    return f"Open {_fmt(open_m)}-{_fmt(close_m)} today -- plenty of flexibility, so timing here was mostly about your route."
 
 
 def plan_itinerary(
@@ -251,6 +308,7 @@ def plan_itinerary(
                 "lng":            c["lng"],
                 "relevance":      c.get("relevance", 1.0),
                 "vibe":           c.get("vibe", ""),
+                "insight":        c.get("insight", ""),
                 "status":         c["status"],
                 "skipped_reason": c.get("availability_note", c["status"]),
             })
@@ -277,6 +335,7 @@ def plan_itinerary(
             duration_min=round(float(c.get("avg_duration", 1.0)) * 60),
             relevance=c.get("relevance", 1.0),
             window=window,
+            hours_source=resolved.source,
         ))
 
     result = ortools_plan(
@@ -289,6 +348,8 @@ def plan_itinerary(
 
     # Build candidate lookup by id for skipped reasons
     cand_by_id = {c["id"]: c for c in candidates}
+
+    weekday_name = WEEKDAYS[weekday_index]
 
     stops_output = []
     for i, stop in enumerate(result.stops):
@@ -304,8 +365,10 @@ def plan_itinerary(
             "avg_duration_hrs":  stop.place.duration_min / 60,
             "relevance":         stop.place.relevance,
             "vibe":              c.get("vibe", ""),
+            "insight":           c.get("insight", ""),
             "status":            c.get("status", ""),
             "availability_note": c.get("availability_note", ""),
+            "timing_reason":     _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins),
         })
 
     for place, reason in result.skipped:
@@ -317,6 +380,7 @@ def plan_itinerary(
             "lng":            place.lng,
             "relevance":      place.relevance,
             "vibe":           c.get("vibe", ""),
+            "insight":        c.get("insight", ""),
             "status":         c.get("status", "Skipped"),
             "skipped_reason": reason,
         })

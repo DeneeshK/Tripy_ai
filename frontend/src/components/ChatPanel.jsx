@@ -4,6 +4,33 @@ import { Send, Loader2, MapPin, Clock, XCircle } from 'lucide-react'
 
 const API = ''  // vite proxy handles /api -> localhost:8000
 
+function StopCard({ stop, index }) {
+  return (
+    <div style={{
+      background: '#fff', border: '1.5px solid #dbeafe',
+      borderRadius: '10px', padding: '10px 14px', marginBottom: '10px',
+      boxShadow: '0 1px 3px rgba(37,99,235,0.08)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+        <span style={{
+          background: '#2563eb', color: '#fff', borderRadius: '50%',
+          width: '20px', height: '20px', display: 'inline-flex', alignItems: 'center',
+          justifyContent: 'center', fontSize: '11px', fontWeight: 700, flexShrink: 0,
+        }}>{index + 1}</span>
+        <strong style={{ fontSize: '15px', color: '#2563eb', fontWeight: 700 }}>{stop.name}</strong>
+      </div>
+      <div style={{ fontSize: '12px', color: '#6b7280', margin: '4px 0 0 28px' }}>
+        {stop.visit_starts} – {stop.visit_ends}
+      </div>
+      {stop.timing_reason && (
+        <div style={{ fontSize: '12.5px', color: '#4b5563', margin: '4px 0 0 28px', lineHeight: '1.4' }}>
+          {stop.timing_reason}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SkippedCard({ place }) {
   return (
     <div style={{
@@ -119,7 +146,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
         if (planRes.ok) {
           const plan = await planRes.json()
           if (plan.stops?.length) onPlanReady(plan)
-          updateLastAssistant({ skipped: plan.skipped || [] })
+          updateLastAssistant({ stops: plan.stops || [], skipped: plan.skipped || [] })
         }
       }
     } catch (err) {
@@ -181,6 +208,11 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     skippedWrap: {
       alignSelf: 'flex-start', maxWidth: '88%', marginTop: '-4px',
     },
+    stopsLabel: {
+      fontSize: '11px', fontWeight: 700, color: '#2563eb',
+      textTransform: 'uppercase', letterSpacing: '0.04em',
+      margin: '6px 0 6px 4px',
+    },
     skippedLabel: {
       fontSize: '11px', fontWeight: 700, color: '#9ca3af',
       textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -217,6 +249,12 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
             <div style={styles.bubble(m.role)}>
               <ReactMarkdown components={markdownComponents}>{m.content}</ReactMarkdown>
             </div>
+            {m.stops?.length > 0 && (
+              <div style={styles.skippedWrap}>
+                <div style={styles.stopsLabel}>Your itinerary, with reasons</div>
+                {m.stops.map((s, idx) => <StopCard key={s.name} stop={s} index={idx} />)}
+              </div>
+            )}
             {m.skipped?.length > 0 && (
               <div style={styles.skippedWrap}>
                 <div style={styles.skippedLabel}>Didn't make the cut</div>

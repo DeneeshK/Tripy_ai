@@ -52,6 +52,7 @@ def _weekday_name(short_or_long: str) -> Optional[str]:
 class OpeningWindows:
     closed_today: bool
     periods_min: List[tuple]  # list of (open_min, close_min), may be empty if closed
+    source: str = "regular"  # "regular" | "special" | "closed" -- which rule produced this
 
 
 def resolve_for_day(
@@ -67,7 +68,7 @@ def resolve_for_day(
     if closed_on and closed_on.lower() != "none":
         closed_day = _weekday_name(closed_on)
         if closed_day == today_name:
-            return OpeningWindows(closed_today=True, periods_min=[])
+            return OpeningWindows(closed_today=True, periods_min=[], source="closed")
 
     special_hours = (special_hours or "").strip()
     if special_hours and special_hours.lower() != "none":
@@ -82,9 +83,9 @@ def resolve_for_day(
             day_name = _weekday_name(day_part)
             if day_name == today_name:
                 full_hours = override.split(":", 1)[1].strip()
-                return OpeningWindows(closed_today=False, periods_min=_parse_periods(full_hours))
+                return OpeningWindows(closed_today=False, periods_min=_parse_periods(full_hours), source="special")
 
-    return OpeningWindows(closed_today=False, periods_min=_parse_periods(regular_hours))
+    return OpeningWindows(closed_today=False, periods_min=_parse_periods(regular_hours), source="regular")
 
 
 def best_window_in_span(
