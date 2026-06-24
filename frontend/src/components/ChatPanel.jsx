@@ -145,7 +145,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
         })
         if (planRes.ok) {
           const plan = await planRes.json()
-          if (plan.stops?.length) onPlanReady(plan)
+          if (plan.stops?.length) onPlanReady(plan)  // plan now includes trip_id
           updateLastAssistant({ stops: plan.stops || [], skipped: plan.skipped || [] })
         }
       }

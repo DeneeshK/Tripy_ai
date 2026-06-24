@@ -125,6 +125,7 @@ def smart_search(
     target_day: str = None,
     trip_end_time: str = None,
     n_results: int = 10,
+    exclude_ids: set = None,
 ) -> List[Dict]:
     current_time = target_time or datetime.now().strftime("%H:%M")
     end_time     = trip_end_time or "23:59"
@@ -142,12 +143,15 @@ def smart_search(
     collection = _get_collection()
     results = collection.query(
         query_embeddings=[vector],
-        n_results=n_results,
+        n_results=n_results + len(exclude_ids or []),  # pad so excluded ids don't shrink the pool
         include=["metadatas", "documents", "distances"],   # distances was missing in original
     )
 
     recommendations = []
     for i in range(len(results["ids"][0])):
+        place_id = results["ids"][0][i]
+        if exclude_ids and place_id in exclude_ids:
+            continue
         meta     = results["metadatas"][0][i]
         distance = results["distances"][0][i]
         doc      = results["documents"][0][i] if results.get("documents") else ""
@@ -174,7 +178,7 @@ def smart_search(
         insight = doc.split("Insight: ", 1)[-1].strip() if "Insight: " in doc else ""
 
         recommendations.append({
-            "id":               results["ids"][0][i],
+            "id":               place_id,
             "name":             meta["name"],
             "lat":              meta["lat"],
             "lng":              meta["lng"],
@@ -303,6 +307,7 @@ def plan_itinerary(
         if c["status"] in ("Closed Today", "Closed"):
             skipped_output.append({
                 "order":          None,
+                "id":             c["id"],
                 "name":           c["name"],
                 "lat":            c["lat"],
                 "lng":            c["lng"],
@@ -356,6 +361,7 @@ def plan_itinerary(
         c = cand_by_id.get(stop.place.id, {})
         stops_output.append({
             "order":             i + 1,
+            "id":                stop.place.id,
             "name":              stop.place.name,
             "lat":               stop.place.lat,
             "lng":               stop.place.lng,
@@ -375,6 +381,7 @@ def plan_itinerary(
         c = cand_by_id.get(place.id, {})
         skipped_output.append({
             "order":          None,
+            "id":             place.id,
             "name":           place.name,
             "lat":            place.lat,
             "lng":            place.lng,

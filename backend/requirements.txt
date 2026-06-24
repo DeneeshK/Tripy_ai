@@ -6,3 +6,5 @@ sentence-transformers
 pandas
 ortools==9.15.6755
 groq
+langgraph
+langchain-core

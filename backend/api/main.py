@@ -26,7 +26,10 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rag.search import smart_search, plan_itinerary
+from rag.search import smart_search, plan_itinerary, WEEKDAYS
+from agents.graph import orchestrator
+from agents.state import trip_store, TripState
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Tripy API", version="2.0")
 
@@ -62,33 +65,152 @@ class ChatRequest(BaseModel):
     lat:      float
     lng:      float
 
+class TripCheckRequest(BaseModel):
+    current_lat: Optional[float] = None
+    current_lng: Optional[float] = None
+    simulated_now: Optional[str] = None  # "HH:MM" -- testing only, see agents/state.py
+    auto_replan: bool = False
+
+class TripReplanRequest(BaseModel):
+    current_lat: Optional[float] = None
+    current_lng: Optional[float] = None
+    simulated_now: Optional[str] = None
+    prefer_indoor: bool = True
+
 # ── /api/plan ────────────────────────────────────────────────────────────────
+
+def _resolve_day_name(day: Optional[str]) -> str:
+    if day is None:
+        return datetime.now().strftime("%A")
+    if day.lower() == "today":
+        return datetime.now().strftime("%A")
+    if day.lower() == "tomorrow":
+        return (datetime.now() + timedelta(days=1)).strftime("%A")
+    return day.strip().capitalize()
+
+
+def _weekday_index(day_name: str) -> int:
+    try:
+        return WEEKDAYS.index(day_name)
+    except ValueError:
+        return datetime.now().weekday()
+
 
 @app.post("/api/plan")
 def plan(req: PlanRequest):
-    candidates = smart_search(
-        user_query   = req.query,
-        user_lat     = req.lat,
-        user_lng     = req.lng,
-        target_time  = req.trip_start,
-        target_day   = req.day,
-        trip_end_time= req.trip_end,
-    )
-    result = plan_itinerary(
-        candidates  = candidates,
-        start_lat   = req.lat,
-        start_lng   = req.lng,
-        trip_start  = req.trip_start,
-        trip_end    = req.trip_end,
-    )
-    stops, skipped = result["stops"], result["skipped"]
+    day_name = _resolve_day_name(req.day)
+    state: TripState = {
+        "mode": "plan",
+        "query": req.query,
+        "home_lat": req.lat,
+        "home_lng": req.lng,
+        "day": day_name,
+        "weekday_index": _weekday_index(day_name),
+        "trip_start": req.trip_start,
+        "trip_end": req.trip_end,
+    }
+    result = orchestrator.invoke(state)
 
-    # Build coordinate list for the map (home → stops → home)
+    trip_id = trip_store.create(result)
+
+    stops, skipped = result["stops"], result["skipped"]
     coords = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in stops]
 
     return {
+        "trip_id": trip_id,
         "stops": stops,
         "skipped": skipped,
+        "coords": coords,
+        "used_distance_fallback": result["used_distance_fallback"],
+    }
+
+
+# ── /api/trip/{id}/check, /replan -- the live monitoring + replanning agent ──
+
+def _now_min(simulated_now: Optional[str]) -> int:
+    if simulated_now:
+        h, m = map(int, simulated_now.split(":"))
+        return h * 60 + m
+    now = datetime.now()
+    return now.hour * 60 + now.minute
+
+
+@app.post("/api/trip/{trip_id}/check")
+def trip_check(trip_id: str, req: TripCheckRequest):
+    """
+    The Weather Monitoring Agent's entry point. Meant to be called by the
+    frontend on an interval (every 30 min, per the original request) while a
+    trip is live. Only flags a warning by default -- doesn't change the plan
+    unless auto_replan is explicitly set, matching the "warn first, replan on
+    request" flow that was actually asked for.
+    """
+    state = trip_store.get(trip_id)
+    if state is None:
+        raise HTTPException(404, f"No trip found with id {trip_id}")
+
+    state["mode"] = "monitor"
+    state["simulated_now"] = req.simulated_now
+    state["auto_replan"] = req.auto_replan
+    if req.current_lat is not None:
+        state["current_lat"] = req.current_lat
+    if req.current_lng is not None:
+        state["current_lng"] = req.current_lng
+
+    result = orchestrator.invoke(state)
+    trip_store.save(trip_id, result)
+
+    response = {
+        "trip_id": trip_id,
+        "needs_replan": result["needs_replan"],
+        "weather_warnings": result.get("weather_warnings", []),
+        "weather_check_failed": result.get("weather_check_failed", False),
+        "weather_check_error": result.get("weather_check_error"),
+        "checked_at": result.get("last_checked_at"),
+    }
+    if req.auto_replan:
+        # The plan itself may have changed -- include it so the frontend can
+        # update without a second round trip.
+        response["stops"] = result["stops"]
+        response["skipped"] = result["skipped"]
+    return response
+
+
+@app.post("/api/trip/{trip_id}/replan")
+def trip_replan(trip_id: str, req: TripReplanRequest):
+    """
+    Fired when the person clicks "Replan" after seeing a weather warning.
+    Re-runs the Trip Planning Agent for the remaining part of the day --
+    already-departed stops are excluded, the starting point becomes the
+    person's current location if given (otherwise the original home point),
+    and prefer_indoor biases the search toward sheltered places.
+    """
+    state = trip_store.get(trip_id)
+    if state is None:
+        raise HTTPException(404, f"No trip found with id {trip_id}")
+
+    now_min = _now_min(req.simulated_now)
+    already_visited = {
+        s["id"] for s in state.get("stops", [])
+        if int(s["visit_ends"].split(":")[0]) * 60 + int(s["visit_ends"].split(":")[1]) <= now_min
+    }
+
+    state["mode"] = "plan"
+    state["exclude_ids"] = list(already_visited)
+    state["prefer_indoor"] = req.prefer_indoor
+    state["trip_start"] = req.simulated_now or f"{now_min // 60:02d}:{now_min % 60:02d}"
+    if req.current_lat is not None and req.current_lng is not None:
+        state["home_lat"] = req.current_lat
+        state["home_lng"] = req.current_lng
+
+    result = orchestrator.invoke(state)
+    trip_store.save(trip_id, result)
+
+    coords = [[state["home_lat"], state["home_lng"]]] + [[s["lat"], s["lng"]] for s in result["stops"]]
+
+    return {
+        "trip_id": trip_id,
+        "stops": result["stops"],
+        "skipped": result["skipped"],
         "coords": coords,
         "used_distance_fallback": result["used_distance_fallback"],
     }
@@ -220,32 +342,35 @@ async def chat(req: ChatRequest):
     for tc in tool_calls:
         try:
             args = json.loads(tc.function.arguments)
-            candidates = smart_search(
-                user_query    = args["query"],
-                user_lat      = req.lat,
-                user_lng      = req.lng,
-                target_time   = args.get("trip_start"),
-                target_day    = args.get("day"),
-                trip_end_time = args.get("trip_end"),
-            )
-            result = plan_itinerary(
-                candidates = candidates,
-                start_lat  = req.lat,
-                start_lng  = req.lng,
-                trip_start = args.get("trip_start", "09:00"),
-                trip_end   = args.get("trip_end",   "18:00"),
-            )
-            tool_content = json.dumps(result)
+            day_name = _resolve_day_name(args.get("day"))
+            state: TripState = {
+                "mode":          "plan",
+                "query":         args["query"],
+                "home_lat":      req.lat,
+                "home_lng":      req.lng,
+                "day":           day_name,
+                "weekday_index": _weekday_index(day_name),
+                "trip_start":    args.get("trip_start", "09:00"),
+                "trip_end":      args.get("trip_end",   "18:00"),
+            }
+            plan_result = orchestrator.invoke(state)
+            trip_id = trip_store.create(plan_result)
+            # Pass the structured result to the model so it can narrate it,
+            # and include trip_id so the frontend can reference this trip.
+            result_for_model = {
+                "trip_id": trip_id,
+                "stops":   plan_result["stops"],
+                "skipped": plan_result["skipped"],
+                "used_distance_fallback": plan_result["used_distance_fallback"],
+            }
+            tool_content = json.dumps(result_for_model)
         except Exception as e:
-            # Surface the failure to the model instead of crashing the
-            # request -- it can apologise and explain rather than the
-            # connection just going dead.
             tool_content = json.dumps({"error": f"Planning failed: {e}"})
 
         messages.append({
             "role":         "tool",
             "tool_call_id": tc.id,
-            "name":         tc.function.name,  # required by Groq's tool-call contract; was missing
+            "name":         tc.function.name,
             "content":      tool_content,
         })
 
