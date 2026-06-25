@@ -111,26 +111,82 @@ export default function App() {
     }
   }
 
-  const showWarning = weatherWarnings.length > 0 && !weatherDismissed
+    const showWarning = weatherWarnings.length > 0 && !weatherDismissed
+
+  const isThunderstorm = weatherWarnings.some(w => w.is_thunderstorm)
+  const severity       = isThunderstorm ? 'SEVERE' : 'WARNING'
+  const sevColor       = isThunderstorm ? '#dc2626' : '#f59e0b'
+
+  function weatherEmoji(w) {
+    if (w.is_thunderstorm) return '⛈️'
+    if (w.precipitation_probability >= 80) return '🌧️'
+    if (w.precipitation_probability >= 60) return '🌦️'
+    return '🌂'
+  }
 
   const styles = {
     root: { display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' },
     left: { width: '380px', flexShrink: 0, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' },
     right: { flex: 1, position: 'relative' },
+
+    weatherCard: {
+      position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
+      zIndex: 1001,
+      background: 'rgba(10, 15, 28, 0.93)',
+      backdropFilter: 'blur(16px)',
+      WebkitBackdropFilter: 'blur(16px)',
+      border: `1px solid ${sevColor}44`,
+      borderRadius: '16px',
+      padding: '14px 16px',
+      color: '#f1f5f9',
+      boxShadow: `0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px ${sevColor}22`,
+      maxWidth: '440px',
+      width: 'calc(100% - 80px)',
+    },
+    cardHeader: {
+      display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px',
+    },
+    sevBadge: {
+      background: sevColor, color: '#fff',
+      fontSize: '10px', fontWeight: 800, letterSpacing: '0.06em',
+      padding: '3px 8px', borderRadius: '20px',
+      marginLeft: 'auto', flexShrink: 0,
+    },
+    stopRow: {
+      background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: '10px', padding: '9px 11px', marginBottom: '6px',
+    },
+    stopRowTop: { display: 'flex', alignItems: 'center', gap: '7px' },
+    stopName:   { fontWeight: 700, fontSize: '13px', flex: 1 },
+    stopTime:   { fontSize: '12px', color: '#94a3b8', flexShrink: 0 },
+    stopDetail: { fontSize: '11.5px', color: '#94a3b8', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '6px' },
+    probPill:   {
+      background: 'rgba(255,255,255,0.1)', borderRadius: '10px',
+      padding: '1px 7px', fontSize: '11px', fontWeight: 600, color: '#cbd5e1',
+    },
+    actions:    { display: 'flex', gap: '8px', marginTop: '12px' },
+    replanBtn:  {
+      flex: 1, background: '#2563eb', color: '#fff', border: 'none',
+      borderRadius: '9px', padding: '9px 12px', cursor: 'pointer',
+      fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', gap: '6px',
+    },
+    dismissBtn: {
+      background: 'rgba(255,255,255,0.07)', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: '9px', padding: '9px 14px', cursor: 'pointer', fontSize: '13px',
+    },
     gpsBadge: {
-      position: 'absolute', top: showWarning ? '76px' : '12px', left: '50%', transform: 'translateX(-50%)',
-      zIndex: 1000, background: gpsStatus === 'denied' ? '#fef3c7' : '#d1fae5',
+      position: 'absolute',
+      top: showWarning ? `${14 + 52 + weatherWarnings.length * 68 + 52}px` : '12px',
+      left: '50%', transform: 'translateX(-50%)',
+      zIndex: 1000,
+      background: gpsStatus === 'denied' ? '#fef3c7' : '#d1fae5',
       color: gpsStatus === 'denied' ? '#92400e' : '#065f46',
       padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
       pointerEvents: 'none', boxShadow: '0 2px 8px rgba(0,0,0,.15)',
-      display: gpsStatus === 'ok' ? 'none' : 'block', transition: 'top 0.2s',
-    },
-    weatherBanner: {
-      position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
-      zIndex: 1001, background: '#fef3c7', border: '1px solid #f59e0b',
-      borderRadius: '10px', padding: '10px 16px', fontSize: '13px',
-      color: '#78350f', boxShadow: '0 4px 12px rgba(0,0,0,.2)',
-      display: 'flex', alignItems: 'center', gap: '12px', maxWidth: '480px', width: 'calc(100% - 80px)',
+      display: gpsStatus === 'ok' ? 'none' : 'block',
+      transition: 'top 0.2s',
     },
   }
 
@@ -140,29 +196,50 @@ export default function App() {
         <ChatPanel userLocation={userLocation} onPlanReady={onPlanReady} />
       </div>
       <div style={styles.right}>
+
         {showWarning && (
-          <div style={styles.weatherBanner}>
-            <span>⛈️</span>
-            <span style={{ flex: 1 }}>
-              <strong>Weather alert:</strong>{' '}
-              {weatherWarnings[0].description} expected around{' '}
-              {weatherWarnings[0].arrival_time} at {weatherWarnings[0].stop_name}.
-              {weatherWarnings.length > 1 && ` (+${weatherWarnings.length - 1} more stops affected)`}
-            </span>
-            <button
-              onClick={handleReplan}
-              disabled={replanLoading}
-              style={{ background: '#d97706', color: '#fff', border: 'none', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>
-              {replanLoading ? '…' : 'Replan'}
-            </button>
-            <button onClick={() => setWeatherDismissed(true)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: '#92400e', lineHeight: 1 }}>×</button>
+          <div style={styles.weatherCard}>
+            <div style={styles.cardHeader}>
+              <span style={{ fontSize: '22px' }}>{isThunderstorm ? '⛈️' : '🌧️'}</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '14px', lineHeight: 1 }}>Weather Alert</div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                  {weatherWarnings.length} stop{weatherWarnings.length > 1 ? 's' : ''} affected
+                </div>
+              </div>
+              <div style={styles.sevBadge}>{severity}</div>
+            </div>
+
+            {weatherWarnings.map((w, i) => (
+              <div key={i} style={styles.stopRow}>
+                <div style={styles.stopRowTop}>
+                  <span style={{ fontSize: '16px' }}>{weatherEmoji(w)}</span>
+                  <span style={styles.stopName}>{w.stop_name}</span>
+                  <span style={styles.stopTime}>~{w.arrival_time}</span>
+                </div>
+                <div style={styles.stopDetail}>
+                  <span>{w.description.charAt(0).toUpperCase() + w.description.slice(1)}</span>
+                  <span style={styles.probPill}>{Math.round(w.precipitation_probability)}% chance</span>
+                </div>
+              </div>
+            ))}
+
+            <div style={styles.actions}>
+              <button onClick={handleReplan} disabled={replanLoading} style={styles.replanBtn}>
+                {replanLoading ? '…replanning' : '🔄 Replan for indoor spots'}
+              </button>
+              <button onClick={() => setWeatherDismissed(true)} style={styles.dismissBtn}>
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
+
         <div style={styles.gpsBadge}>
-          {gpsStatus === 'denied' && '📍 Using Trivandrum centre — location access was denied'}
+          {gpsStatus === 'denied'    && '📍 Using Trivandrum centre — location access was denied'}
           {gpsStatus === 'requesting' && '📍 Getting your location…'}
         </div>
+
         <TripMap
           userLocation={userLocation}
           stops={stops}

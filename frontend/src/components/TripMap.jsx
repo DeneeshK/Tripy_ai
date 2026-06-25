@@ -2,93 +2,224 @@ import React, { useEffect, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 
-// ─── Tile layer definitions ───────────────────────────────────────────────────
-// All URLs verified directly from provider docs, not from memory.
-// Stadia: works on localhost with no key; production needs domain auth
-//   (free, just whitelist your domain at client.stadiamaps.com) or STADIA_API_KEY.
-// OWM: needs a free API key from openweathermap.org.
+// ─── Inject animation CSS once at module load ─────────────────────────────────
+// The dashed-line animation targets the SVG path Leaflet creates when className
+// is applied -- this is the only way to animate it, since Leaflet manages the
+// DOM element directly.
+const ROUTE_CSS = `
+  .tripy-route-line {
+    animation: tripy-flow 0.7s linear infinite;
+  }
+  @keyframes tripy-flow {
+    to { stroke-dashoffset: -22; }
+  }
+`
+if (typeof document !== 'undefined' && !document.getElementById('tripy-map-css')) {
+  const style = document.createElement('style')
+  style.id = 'tripy-map-css'
+  style.textContent = ROUTE_CSS
+  document.head.appendChild(style)
+}
 
+// ─── Tile layer definitions ───────────────────────────────────────────────────
 function buildLayers(stadiaKey, owmKey) {
   const sk = stadiaKey ? `?api_key=${stadiaKey}` : ''
   return {
     base: [
       {
-        id: 'osm',
-        label: 'Street',
-        emoji: '🗺️',
+        id: 'osm', label: 'Street', emoji: '🗺️',
         url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxZoom: 19,
-        ext: 'png',
       },
       {
-        id: 'dark',
-        label: 'Dark',
-        emoji: '🌙',
+        id: 'dark', label: 'Dark', emoji: '🌙',
         url: `https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png${sk}`,
         attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 20,
-        ext: 'png',
       },
       {
-        id: 'satellite',
-        label: 'Satellite',
-        emoji: '🛰️',
+        id: 'satellite', label: 'Satellite', emoji: '🛰️',
         url: `https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.jpg${sk}`,
         attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://www.esri.com/">Esri</a>',
         maxZoom: 20,
-        ext: 'jpg',
       },
     ],
     weather: owmKey
       ? [
-          {
-            id: 'precipitation',
-            label: 'Rain',
-            emoji: '🌧️',
-            url: `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${owmKey}`,
-            attribution: '&copy; <a href="https://openweathermap.org">OpenWeatherMap</a>',
-            opacity: 0.6,
-          },
-          {
-            id: 'clouds',
-            label: 'Clouds',
-            emoji: '☁️',
-            url: `https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${owmKey}`,
-            attribution: '&copy; <a href="https://openweathermap.org">OpenWeatherMap</a>',
-            opacity: 0.5,
-          },
-          {
-            id: 'wind',
-            label: 'Wind',
-            emoji: '💨',
-            url: `https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${owmKey}`,
-            attribution: '&copy; <a href="https://openweathermap.org">OpenWeatherMap</a>',
-            opacity: 0.6,
-          },
+          { id: 'precipitation', label: 'Rain',   emoji: '🌧️', url: `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${owmKey}`, attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
+          { id: 'clouds',        label: 'Clouds', emoji: '☁️', url: `https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${owmKey}`,        attribution: '&copy; OpenWeatherMap', opacity: 0.5 },
+          { id: 'wind',          label: 'Wind',   emoji: '💨', url: `https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${owmKey}`,           attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
         ]
       : [],
   }
 }
 
-// ─── Marker helpers ───────────────────────────────────────────────────────────
-function numberedIcon(n, dark = false) {
-  const bg = dark ? '#60a5fa' : '#2563eb'
+// ─── Location pin marker (real teardrop pin shape, red) ───────────────────────
+function pinIcon(n) {
+  // SVG teardrop pin: circle on top, tapers to a point at the bottom.
+  // Number sits in the white inner circle.
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 48" width="36" height="48">
+      <path d="M18 0 C8.06 0 0 8.06 0 18 C0 31.5 18 48 18 48 C18 48 36 31.5 36 18 C36 8.06 27.94 0 18 0Z"
+        fill="#dc2626" filter="drop-shadow(0 2px 4px rgba(0,0,0,0.45))"/>
+      <circle cx="18" cy="18" r="9" fill="rgba(255,255,255,0.95)"/>
+      <text x="18" y="22" text-anchor="middle" font-size="10" font-weight="800"
+        font-family="system-ui,-apple-system,sans-serif" fill="#dc2626">${n}</text>
+    </svg>`
   return L.divIcon({
     className: '',
-    html: `<div style="width:32px;height:32px;border-radius:50%;background:${bg};
-      color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;
-      justify-content:center;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.45)">${n}</div>`,
-    iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -18],
+    html: svg,
+    iconSize:    [36, 48],
+    iconAnchor:  [18, 48],
+    popupAnchor: [0,  -50],
   })
 }
 
-const homeIcon = L.divIcon({
+const homePin = L.divIcon({
   className: '',
-  html: `<div style="width:18px;height:18px;border-radius:50%;background:#10b981;
-    border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)"></div>`,
-  iconSize: [18, 18], iconAnchor: [9, 9],
+  html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22">
+    <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#fff" stroke-width="2.5"
+      filter="drop-shadow(0 1px 3px rgba(0,0,0,0.4))"/>
+    <circle cx="12" cy="12" r="4" fill="rgba(255,255,255,0.9)"/>
+  </svg>`,
+  iconSize:    [22, 22],
+  iconAnchor:  [11, 11],
+  popupAnchor: [0, -13],
 })
+
+// ─── Popup content ────────────────────────────────────────────────────────────
+function StopPopup({ stop }) {
+  // Pull first real sentence from insight (the full visitor review text)
+  const brief = stop.insight
+    ? stop.insight.split(/[.!?]/)[0].replace(/^[^:]*:\s*/, '').trim().slice(0, 130)
+    : ''
+
+  return (
+    <div style={{ minWidth: '180px', maxWidth: '240px', padding: '2px' }}>
+      <div style={{ fontWeight: 700, fontSize: '14px', color: '#1e293b', marginBottom: '4px' }}>
+        {stop.name}
+      </div>
+      <div style={{
+        display: 'inline-block', background: '#fee2e2', color: '#dc2626',
+        fontSize: '11px', fontWeight: 600, padding: '2px 7px', borderRadius: '10px',
+        marginBottom: '6px',
+      }}>
+        {stop.visit_starts} – {stop.visit_ends}
+      </div>
+      {stop.vibe && (
+        <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '5px' }}>
+          {stop.vibe.split(',').slice(0, 3).map(v => v.trim()).join(' · ')}
+        </div>
+      )}
+      {brief && (
+        <div style={{ fontSize: '12px', color: '#374151', lineHeight: '1.4', borderTop: '1px solid #f3f4f6', paddingTop: '5px' }}>
+          {brief}{brief.length === 130 ? '…' : '.'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Layer Switcher ───────────────────────────────────────────────────────────
+function LayerSwitcher({ layers, activeBaseId, onBaseChange, activeWeatherId, onWeatherChange, dark }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const bg     = dark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.95)'
+  const text   = dark ? '#e2e8f0' : '#1e293b'
+  const border = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'
+  const sub    = dark ? '#94a3b8' : '#6b7280'
+  const activeBg  = dark ? 'rgba(37,99,235,0.25)' : '#eff6ff'
+  const activeBdr = '#2563eb'
+  const hoverBg   = dark ? 'rgba(255,255,255,0.06)' : '#f8fafc'
+
+  const cardStyle = {
+    background: bg,
+    backdropFilter: 'blur(12px)',
+    border: `1px solid ${border}`,
+    borderRadius: '14px',
+    padding: '14px',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+    minWidth: '220px',
+    color: text,
+  }
+
+  const sectionLabel = {
+    fontSize: '10px', fontWeight: 700, color: sub,
+    textTransform: 'uppercase', letterSpacing: '0.08em',
+    marginBottom: '8px',
+  }
+
+  const optionBtn = (active) => ({
+    flex: 1, padding: '9px 6px', borderRadius: '9px', cursor: 'pointer',
+    border: `1.5px solid ${active ? activeBdr : border}`,
+    background: active ? activeBg : 'transparent',
+    color: text, fontSize: '12px', fontWeight: 600,
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
+    transition: 'background 0.15s, border-color 0.15s',
+  })
+
+  return (
+    <div ref={ref} style={{ position: 'absolute', bottom: '32px', right: '12px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+      {open && (
+        <div style={cardStyle}>
+          <p style={sectionLabel}>Map style</p>
+          <div style={{ display: 'flex', gap: '7px', marginBottom: layers.weather.length ? '14px' : 0 }}>
+            {layers.base.map(l => (
+              <button key={l.id} onClick={() => onBaseChange(l.id)} style={optionBtn(activeBaseId === l.id)}>
+                <span style={{ fontSize: '22px' }}>{l.emoji}</span>
+                {l.label}
+              </button>
+            ))}
+          </div>
+          {layers.weather.length > 0 && (
+            <>
+              <p style={sectionLabel}>Weather overlay</p>
+              <div style={{ display: 'flex', gap: '7px' }}>
+                {layers.weather.map(l => (
+                  <button key={l.id}
+                    onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
+                    style={optionBtn(activeWeatherId === l.id)}>
+                    <span style={{ fontSize: '20px' }}>{l.emoji}</span>
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {layers.weather.length === 0 && (
+            <p style={{ fontSize: '11px', color: sub, marginTop: '10px', borderTop: `1px solid ${border}`, paddingTop: '10px' }}>
+              Add <code>OWM_API_KEY</code> to <code>.env</code> for weather overlays.
+            </p>
+          )}
+        </div>
+      )}
+
+      <button onClick={() => setOpen(v => !v)} style={{
+        background: bg, backdropFilter: 'blur(12px)',
+        border: `1px solid ${border}`, borderRadius: '10px',
+        padding: '8px 14px', cursor: 'pointer',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.15)',
+        display: 'flex', alignItems: 'center', gap: '7px',
+        color: text, fontSize: '13px', fontWeight: 600,
+        transition: 'box-shadow 0.15s',
+      }}>
+        <span style={{ fontSize: '18px' }}>
+          {layers.base.find(l => l.id === activeBaseId)?.emoji || '🗺️'}
+        </span>
+        Layers
+        <span style={{ fontSize: '10px', opacity: 0.6 }}>{open ? '▲' : '▼'}</span>
+      </button>
+    </div>
+  )
+}
 
 function FlyTo({ center }) {
   const map = useMap()
@@ -96,156 +227,51 @@ function FlyTo({ center }) {
   return null
 }
 
-// ─── Layer Switcher (Google-Maps style, bottom-right) ─────────────────────────
-function LayerSwitcher({ layers, activeBaseId, onBaseChange, activeWeatherId, onWeatherChange, dark }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
-
-  const cardBg = dark ? '#1e293b' : '#fff'
-  const text   = dark ? '#e2e8f0' : '#1e293b'
-  const border = dark ? '#334155' : '#e2e8f0'
-  const activeBg = dark ? '#2563eb22' : '#eff6ff'
-  const activeBorder = '#2563eb'
-
-  return (
-    <div ref={ref} style={{
-      position: 'absolute', bottom: '28px', right: '12px', zIndex: 1000,
-      display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px',
-    }}>
-      {open && (
-        <div style={{
-          background: cardBg, border: `1px solid ${border}`, borderRadius: '12px',
-          padding: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
-          minWidth: '200px',
-        }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: dark ? '#94a3b8' : '#6b7280',
-            textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-            Map style
-          </div>
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
-            {layers.base.map(l => (
-              <button key={l.id} onClick={() => { onBaseChange(l.id); }}
-                style={{
-                  flex: 1, padding: '8px 4px', borderRadius: '8px', cursor: 'pointer',
-                  border: `2px solid ${activeBaseId === l.id ? activeBorder : border}`,
-                  background: activeBaseId === l.id ? activeBg : 'transparent',
-                  color: text, fontSize: '12px', fontWeight: 600,
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
-                }}>
-                <span style={{ fontSize: '20px' }}>{l.emoji}</span>
-                {l.label}
-              </button>
-            ))}
-          </div>
-
-          {layers.weather.length > 0 && (
-            <>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: dark ? '#94a3b8' : '#6b7280',
-                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-                Weather overlay
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                {layers.weather.map(l => (
-                  <button key={l.id}
-                    onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
-                    style={{
-                      flex: 1, padding: '6px 4px', borderRadius: '8px', cursor: 'pointer',
-                      border: `2px solid ${activeWeatherId === l.id ? activeBorder : border}`,
-                      background: activeWeatherId === l.id ? activeBg : 'transparent',
-                      color: text, fontSize: '12px', fontWeight: 600,
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
-                    }}>
-                    <span style={{ fontSize: '18px' }}>{l.emoji}</span>
-                    {l.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {layers.weather.length === 0 && (
-            <div style={{ fontSize: '12px', color: dark ? '#64748b' : '#9ca3af', marginTop: '4px' }}>
-              Add <code>OWM_API_KEY</code> to <code>.env</code> to enable weather overlays.
-            </div>
-          )}
-        </div>
-      )}
-
-      <button onClick={() => setOpen(v => !v)} style={{
-        background: cardBg, border: `1px solid ${border}`, borderRadius: '8px',
-        padding: '8px 12px', cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,.15)',
-        display: 'flex', alignItems: 'center', gap: '6px',
-        color: text, fontSize: '13px', fontWeight: 600,
-      }}>
-        <span style={{ fontSize: '18px' }}>
-          {layers.base.find(l => l.id === activeBaseId)?.emoji || '🗺️'}
-        </span>
-        Layers
-      </button>
-    </div>
-  )
-}
-
-// ─── Main map component ───────────────────────────────────────────────────────
+// ─── Main export ──────────────────────────────────────────────────────────────
 export default function TripMap({ userLocation, stops, route, stadiaApiKey = '', owmApiKey = '' }) {
-  const [activeBaseId, setActiveBaseId] = useState('osm')
+  const [activeBaseId, setActiveBaseId]       = useState('osm')
   const [activeWeatherId, setActiveWeatherId] = useState(null)
 
-  const layers = buildLayers(stadiaApiKey, owmApiKey)
-  const baseLayer = layers.base.find(l => l.id === activeBaseId) || layers.base[0]
+  const layers      = buildLayers(stadiaApiKey, owmApiKey)
+  const baseLayer   = layers.base.find(l => l.id === activeBaseId) || layers.base[0]
   const weatherLayer = activeWeatherId ? layers.weather.find(l => l.id === activeWeatherId) : null
-  const dark = activeBaseId === 'dark'
-
-  const routeColor = dark ? '#60a5fa' : '#2563eb'
-  const center = userLocation || [8.5241, 76.9366]
+  const dark        = activeBaseId === 'dark'
+  const routeColor  = dark ? '#93c5fd' : '#2563eb'
+  const center      = userLocation || [8.5241, 76.9366]
 
   return (
-    <MapContainer center={center} zoom={12}
-      style={{ width: '100%', height: '100%' }} zoomControl={true}>
+    <MapContainer center={center} zoom={12} style={{ width: '100%', height: '100%' }} zoomControl>
+      <TileLayer key={baseLayer.id} url={baseLayer.url}
+        attribution={baseLayer.attribution} maxZoom={baseLayer.maxZoom} />
 
-      {/* Base layer -- key prop forces re-mount when URL changes */}
-      <TileLayer key={baseLayer.id}
-        url={baseLayer.url}
-        attribution={baseLayer.attribution}
-        maxZoom={baseLayer.maxZoom}
-      />
-
-      {/* Weather overlay -- togglable on top */}
       {weatherLayer && (
-        <TileLayer key={weatherLayer.id}
-          url={weatherLayer.url}
-          attribution={weatherLayer.attribution}
-          opacity={weatherLayer.opacity}
-        />
+        <TileLayer key={weatherLayer.id} url={weatherLayer.url}
+          attribution={weatherLayer.attribution} opacity={weatherLayer.opacity} />
       )}
 
       {userLocation && (
-        <Marker position={userLocation} icon={homeIcon}>
-          <Popup>You are here</Popup>
+        <Marker position={userLocation} icon={homePin}>
+          <Popup><span style={{ fontWeight: 600, fontSize: '13px' }}>You are here</span></Popup>
         </Marker>
       )}
 
       {stops.map((s, i) => (
-        <Marker key={s.name} position={[s.lat, s.lng]} icon={numberedIcon(i + 1, dark)}>
-          <Popup>
-            <strong>{s.name}</strong><br />
-            {s.visit_starts} – {s.visit_ends}<br />
-            <span style={{ color: '#6b7280', fontSize: '12px' }}>{s.vibe?.split(',')[0]}</span>
-          </Popup>
+        <Marker key={`${s.name}-${i}`} position={[s.lat, s.lng]} icon={pinIcon(i + 1)}>
+          <Popup><StopPopup stop={s} /></Popup>
         </Marker>
       ))}
 
+      {/* Animated dashed route line -- dashArray creates the segments,
+          the CSS animation on .tripy-route-line moves stroke-dashoffset
+          continuously to show direction of travel */}
       {route?.coordinates && (
         <Polyline
           positions={route.coordinates.map(([lng, lat]) => [lat, lng])}
-          color={routeColor} weight={4} opacity={0.75}
+          color={routeColor}
+          weight={4}
+          opacity={0.85}
+          dashArray="12 10"
+          className="tripy-route-line"
         />
       )}
 
