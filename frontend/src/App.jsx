@@ -14,7 +14,16 @@ export default function App() {
   const [weatherWarnings, setWeatherWarnings] = useState([])
   const [replanLoading, setReplanLoading] = useState(false)
   const [weatherDismissed, setWeatherDismissed] = useState(false)
+  const [mapConfig, setMapConfig] = useState({ owm_api_key: '', stadia_api_key: '' })
   const pollRef = useRef(null)
+
+  // Fetch map API keys from backend once on load
+  useEffect(() => {
+    fetch(`${API}/api/config`)
+      .then(r => r.ok ? r.json() : {})
+      .then(cfg => setMapConfig(cfg))
+      .catch(() => {})
+  }, [])
 
   // Ask for GPS on load
   useEffect(() => {
@@ -154,7 +163,13 @@ export default function App() {
           {gpsStatus === 'denied' && '📍 Using Trivandrum centre — location access was denied'}
           {gpsStatus === 'requesting' && '📍 Getting your location…'}
         </div>
-        <TripMap userLocation={userLocation} stops={stops} route={route} />
+        <TripMap
+          userLocation={userLocation}
+          stops={stops}
+          route={route}
+          stadiaApiKey={mapConfig.stadia_api_key || ''}
+          owmApiKey={mapConfig.owm_api_key || ''}
+        />
       </div>
     </div>
   )

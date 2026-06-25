@@ -1,17 +1,20 @@
 """
-api/main.py  --  FastAPI backend for Tripy.
+api/main.py  --  FastAPI backend for Tripy v2.
 
 Endpoints:
-  POST /api/plan    -- run search + itinerary planning, return stops + map coords
-  POST /api/chat    -- Groq streaming chat with plan_my_day tool
-  GET  /api/route   -- OSRM route geometry for the map
+  GET  /api/config              -- serves tile API keys to the frontend
+  POST /api/plan                -- full search + OR-Tools itinerary via orchestrator
+  POST /api/chat                -- Groq streaming chat with plan_my_day tool
+  GET  /api/route               -- OSRM road-route geometry for the map
+  POST /api/trip/{id}/check     -- weather monitoring agent (every 30 min)
+  POST /api/trip/{id}/replan    -- replan after user accepts a weather warning
 """
 
 import json
-import math
 import os
 import sys
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -19,20 +22,29 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from groq import Groq
+from pydantic import BaseModel
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag.search import smart_search, plan_itinerary, WEEKDAYS
 from agents.graph import orchestrator
 from agents.state import trip_store, TripState
-from datetime import datetime, timedelta
+
+# ── Environment ───────────────────────────────────────────────────────────────
+
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL     = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+OWM_API_KEY    = os.getenv("OWM_API_KEY", "")    # openweathermap.org free tier -- weather overlay
+STADIA_API_KEY = os.getenv("STADIA_API_KEY", "")  # optional; localhost works without it
+OSRM_BASE      = "https://router.project-osrm.org"
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Tripy API", version="2.0")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,21 +52,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-OSRM_BASE    = "https://router.project-osrm.org"
-
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-
-# ── Request / Response models ───────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class PlanRequest(BaseModel):
     query:      str
     lat:        float
     lng:        float
-    trip_start: str          # "HH:MM"
-    trip_end:   str          # "HH:MM"
-    day:        Optional[str] = None   # "Monday" | "today" | "tomorrow" | None
+    trip_start: str
+    trip_end:   str
+    day:        Optional[str] = None
 
 class ChatMessage(BaseModel):
     role:    str
@@ -66,23 +72,21 @@ class ChatRequest(BaseModel):
     lng:      float
 
 class TripCheckRequest(BaseModel):
-    current_lat: Optional[float] = None
-    current_lng: Optional[float] = None
-    simulated_now: Optional[str] = None  # "HH:MM" -- testing only, see agents/state.py
-    auto_replan: bool = False
+    current_lat:   Optional[float] = None
+    current_lng:   Optional[float] = None
+    simulated_now: Optional[str]   = None  # "HH:MM" -- for testing without a real clock
+    auto_replan:   bool = False
 
 class TripReplanRequest(BaseModel):
-    current_lat: Optional[float] = None
-    current_lng: Optional[float] = None
-    simulated_now: Optional[str] = None
+    current_lat:   Optional[float] = None
+    current_lng:   Optional[float] = None
+    simulated_now: Optional[str]   = None
     prefer_indoor: bool = True
 
-# ── /api/plan ────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _resolve_day_name(day: Optional[str]) -> str:
-    if day is None:
-        return datetime.now().strftime("%A")
-    if day.lower() == "today":
+    if day is None or day.lower() == "today":
         return datetime.now().strftime("%A")
     if day.lower() == "tomorrow":
         return (datetime.now() + timedelta(days=1)).strftime("%A")
@@ -96,37 +100,6 @@ def _weekday_index(day_name: str) -> int:
         return datetime.now().weekday()
 
 
-@app.post("/api/plan")
-def plan(req: PlanRequest):
-    day_name = _resolve_day_name(req.day)
-    state: TripState = {
-        "mode": "plan",
-        "query": req.query,
-        "home_lat": req.lat,
-        "home_lng": req.lng,
-        "day": day_name,
-        "weekday_index": _weekday_index(day_name),
-        "trip_start": req.trip_start,
-        "trip_end": req.trip_end,
-    }
-    result = orchestrator.invoke(state)
-
-    trip_id = trip_store.create(result)
-
-    stops, skipped = result["stops"], result["skipped"]
-    coords = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in stops]
-
-    return {
-        "trip_id": trip_id,
-        "stops": stops,
-        "skipped": skipped,
-        "coords": coords,
-        "used_distance_fallback": result["used_distance_fallback"],
-    }
-
-
-# ── /api/trip/{id}/check, /replan -- the live monitoring + replanning agent ──
-
 def _now_min(simulated_now: Optional[str]) -> int:
     if simulated_now:
         h, m = map(int, simulated_now.split(":"))
@@ -134,23 +107,63 @@ def _now_min(simulated_now: Optional[str]) -> int:
     now = datetime.now()
     return now.hour * 60 + now.minute
 
+# ── /api/config ───────────────────────────────────────────────────────────────
+
+@app.get("/api/config")
+def config():
+    """
+    Serves tile API keys to the frontend so they don't get baked into the
+    JS bundle at build time. Still visible via DevTools -- fine for free-tier
+    map tile keys, just worth knowing.
+    """
+    return {
+        "owm_api_key":    OWM_API_KEY,
+        "stadia_api_key": STADIA_API_KEY,
+    }
+
+# ── /api/plan ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/plan")
+def plan(req: PlanRequest):
+    day_name = _resolve_day_name(req.day)
+    state: TripState = {
+        "mode":          "plan",
+        "query":         req.query,
+        "home_lat":      req.lat,
+        "home_lng":      req.lng,
+        "day":           day_name,
+        "weekday_index": _weekday_index(day_name),
+        "trip_start":    req.trip_start,
+        "trip_end":      req.trip_end,
+    }
+    result   = orchestrator.invoke(state)
+    trip_id  = trip_store.create(result)
+    stops    = result["stops"]
+    coords   = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in stops]
+    return {
+        "trip_id":               trip_id,
+        "stops":                 stops,
+        "skipped":               result["skipped"],
+        "coords":                coords,
+        "used_distance_fallback": result["used_distance_fallback"],
+    }
+
+# ── /api/trip/{id}/check and /replan ─────────────────────────────────────────
 
 @app.post("/api/trip/{trip_id}/check")
 def trip_check(trip_id: str, req: TripCheckRequest):
     """
-    The Weather Monitoring Agent's entry point. Meant to be called by the
-    frontend on an interval (every 30 min, per the original request) while a
-    trip is live. Only flags a warning by default -- doesn't change the plan
-    unless auto_replan is explicitly set, matching the "warn first, replan on
-    request" flow that was actually asked for.
+    Weather Monitoring Agent entry point. Called by the frontend every 30 min
+    while a trip is live. Default: flags a warning but does NOT change the plan.
+    Set auto_replan=True to let the agent replan immediately on its own.
     """
     state = trip_store.get(trip_id)
     if state is None:
         raise HTTPException(404, f"No trip found with id {trip_id}")
 
-    state["mode"] = "monitor"
+    state["mode"]          = "monitor"
     state["simulated_now"] = req.simulated_now
-    state["auto_replan"] = req.auto_replan
+    state["auto_replan"]   = req.auto_replan
     if req.current_lat is not None:
         state["current_lat"] = req.current_lat
     if req.current_lng is not None:
@@ -160,17 +173,15 @@ def trip_check(trip_id: str, req: TripCheckRequest):
     trip_store.save(trip_id, result)
 
     response = {
-        "trip_id": trip_id,
-        "needs_replan": result["needs_replan"],
-        "weather_warnings": result.get("weather_warnings", []),
+        "trip_id":              trip_id,
+        "needs_replan":         result["needs_replan"],
+        "weather_warnings":     result.get("weather_warnings", []),
         "weather_check_failed": result.get("weather_check_failed", False),
-        "weather_check_error": result.get("weather_check_error"),
-        "checked_at": result.get("last_checked_at"),
+        "weather_check_error":  result.get("weather_check_error"),
+        "checked_at":           result.get("last_checked_at"),
     }
     if req.auto_replan:
-        # The plan itself may have changed -- include it so the frontend can
-        # update without a second round trip.
-        response["stops"] = result["stops"]
+        response["stops"]   = result["stops"]
         response["skipped"] = result["skipped"]
     return response
 
@@ -178,11 +189,9 @@ def trip_check(trip_id: str, req: TripCheckRequest):
 @app.post("/api/trip/{trip_id}/replan")
 def trip_replan(trip_id: str, req: TripReplanRequest):
     """
-    Fired when the person clicks "Replan" after seeing a weather warning.
-    Re-runs the Trip Planning Agent for the remaining part of the day --
-    already-departed stops are excluded, the starting point becomes the
-    person's current location if given (otherwise the original home point),
-    and prefer_indoor biases the search toward sheltered places.
+    Fired when the user clicks 'Replan' after a weather warning. Excludes
+    already-completed stops, updates the start to current time/location,
+    and biases toward indoor places if prefer_indoor is set.
     """
     state = trip_store.get(trip_id)
     if state is None:
@@ -194,40 +203,34 @@ def trip_replan(trip_id: str, req: TripReplanRequest):
         if int(s["visit_ends"].split(":")[0]) * 60 + int(s["visit_ends"].split(":")[1]) <= now_min
     }
 
-    state["mode"] = "plan"
-    state["exclude_ids"] = list(already_visited)
+    state["mode"]         = "plan"
+    state["exclude_ids"]  = list(already_visited)
     state["prefer_indoor"] = req.prefer_indoor
-    state["trip_start"] = req.simulated_now or f"{now_min // 60:02d}:{now_min % 60:02d}"
+    state["trip_start"]   = req.simulated_now or f"{now_min // 60:02d}:{now_min % 60:02d}"
     if req.current_lat is not None and req.current_lng is not None:
         state["home_lat"] = req.current_lat
         state["home_lng"] = req.current_lng
 
-    result = orchestrator.invoke(state)
+    result  = orchestrator.invoke(state)
     trip_store.save(trip_id, result)
-
-    coords = [[state["home_lat"], state["home_lng"]]] + [[s["lat"], s["lng"]] for s in result["stops"]]
-
+    coords  = [[state["home_lat"], state["home_lng"]]] + [[s["lat"], s["lng"]] for s in result["stops"]]
     return {
-        "trip_id": trip_id,
-        "stops": result["stops"],
-        "skipped": result["skipped"],
-        "coords": coords,
+        "trip_id":               trip_id,
+        "stops":                 result["stops"],
+        "skipped":               result["skipped"],
+        "coords":                coords,
         "used_distance_fallback": result["used_distance_fallback"],
     }
 
-
-# ── /api/route ───────────────────────────────────────────────────────────────
+# ── /api/route ────────────────────────────────────────────────────────────────
 
 @app.get("/api/route")
 def get_route(coords: str):
-    """
-    coords: "lat1,lng1;lat2,lng2;..."
-    Returns a GeoJSON LineString of the OSRM road route.
-    """
+    """coords: 'lat1,lng1;lat2,lng2;...' -- returns GeoJSON LineString from OSRM."""
     try:
-        pairs = [c.split(",") for c in coords.split(";")]
-        coord_str = ";".join(f"{p[1]},{p[0]}" for p in pairs)  # OSRM is lng,lat
-        url = f"{OSRM_BASE}/route/v1/driving/{coord_str}?overview=full&geometries=geojson"
+        pairs     = [c.split(",") for c in coords.split(";")]
+        coord_str = ";".join(f"{p[1]},{p[0]}" for p in pairs)  # OSRM wants lng,lat
+        url       = f"{OSRM_BASE}/route/v1/driving/{coord_str}?overview=full&geometries=geojson"
         with urllib.request.urlopen(url, timeout=8) as resp:
             data = json.loads(resp.read())
         if data.get("code") != "Ok":
@@ -238,51 +241,38 @@ def get_route(coords: str):
     except Exception as e:
         raise HTTPException(502, f"Route fetch failed: {e}")
 
-
-# ── /api/chat  (Groq streaming + tool calling) ───────────────────────────────
+# ── /api/chat  (Groq streaming + tool calling) ────────────────────────────────
 
 SYSTEM_PROMPT = """You are Tripy, a friendly trip-planning assistant for Trivandrum, Kerala.
 
 WHEN TO ASK VS WHEN TO BUILD:
-Only ask a clarifying question if the request is genuinely ambiguous (e.g. they
-gave no sense of duration or interest at all). If they've given you enough to
-work with -- a time window (even rough) and some idea of what they want to see
--- call plan_my_day immediately. Don't ask about things you can reasonably
-assume (e.g. default to "today" if no day is mentioned). At most one question,
-only when truly needed -- never a checklist.
+Only ask a clarifying question if the request is genuinely ambiguous (no time
+window, no interests at all). If they've given you enough -- even a rough time
+and a vibe -- call plan_my_day immediately. Default to "today" if no day is
+mentioned. At most one question, only when truly needed.
 
-AFTER THE PLAN COMES BACK, the exact timing for each stop and the exact reason
-each skipped place was left out are ALREADY shown to the user as structured
-cards in the interface -- you don't need to restate those numbers or that
-hour-by-hour reasoning in your own words, that would just repeat what they can
-already see. Instead, use your reply for the part the cards can't do:
-  - A brief, warm one- or two-line overview of the day.
-  - For each stop, in order: what the place actually IS and why it's worth
-    visiting, using the real visitor-review material given to you in its
-    `insight` field -- paraphrase naturally, but don't invent details that
-    aren't in there. Then connect it to what they asked for, using its `vibe`
-    tags -- why does this specific place match their interest.
-  - Keep timing to at most a passing word ("first stop", "to finish the day")
-    -- never restate the literal opening/closing time or the reasoning behind
-    it, the card below it already says that precisely.
-  - For what didn't make the cut, a brief, warm sentence or two is enough --
-    what kind of places they were and roughly why, without repeating the
-    exact minute figures (the cards already show those).
+AFTER THE PLAN COMES BACK, the exact timing for each stop and the exact skip
+reasons are already shown as structured cards in the UI -- don't restate them.
+Instead:
+  - A brief warm overview of the day (one or two lines).
+  - For each stop: what the place IS and why it matches what they asked for,
+    drawing from its `insight` field (real visitor-review material). Paraphrase
+    naturally -- don't invent details not in there.
+  - For what didn't make the cut: a brief sentence or two covering what kind
+    of places they were and roughly why, without repeating exact minute figures.
+  - If travel times are estimated rather than from live road data, say so once.
 
-NEVER mention internal field or variable names (e.g. "used_distance_fallback",
-"skipped_reason", any JSON key, or other code-like terms) in your reply --
-describe things in plain conversational English only. If travel times are
-estimated rather than from live road data, just say so plainly, once.
-
-FORMATTING: you can use markdown -- **bold** for place names, bullet points
-for lists. Keep it warm and conversational, not a report.
+NEVER mention internal field or variable names (used_distance_fallback,
+skipped_reason, JSON keys, etc.) -- plain English only.
+FORMATTING: markdown is fine -- **bold** for place names, bullet lists.
+Keep it warm and conversational.
 """
 
 PLAN_TOOL = {
     "type": "function",
     "function": {
         "name": "plan_my_day",
-        "description": "Plan a timed trip itinerary around Trivandrum based on what the traveller wants.",
+        "description": "Plan a timed trip itinerary around Trivandrum.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -314,34 +304,26 @@ async def chat(req: ChatRequest):
             temperature=0.3,
         )
     except Exception as e:
-        # Fails before any streaming response has started, so a normal
-        # HTTP error is safe here -- the frontend will see it cleanly.
         raise HTTPException(502, f"Groq request failed: {e}")
 
-    msg = first.choices[0].message
+    msg        = first.choices[0].message
     tool_calls = msg.tool_calls or []
 
-    # Built explicitly rather than via msg.model_dump(exclude_none=True),
-    # which silently drops the "content" key when it's None -- Groq's API
-    # then rejects the next call as malformed, and because that failure
-    # happens mid-stream (after headers are already sent) it doesn't surface
-    # as an error, it just hangs the connection open with nothing coming
-    # through. This is the bug behind the chat going silent.
+    # Build the assistant message explicitly -- model_dump(exclude_none=True)
+    # silently drops 'content' when it's None, which makes Groq reject the
+    # next request and causes the chat to hang silently.
     assistant_msg = {"role": "assistant", "content": msg.content}
     if tool_calls:
         assistant_msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
+            {"id": tc.id, "type": "function",
+             "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
             for tc in tool_calls
         ]
     messages.append(assistant_msg)
 
     for tc in tool_calls:
         try:
-            args = json.loads(tc.function.arguments)
+            args     = json.loads(tc.function.arguments)
             day_name = _resolve_day_name(args.get("day"))
             state: TripState = {
                 "mode":          "plan",
@@ -354,16 +336,13 @@ async def chat(req: ChatRequest):
                 "trip_end":      args.get("trip_end",   "18:00"),
             }
             plan_result = orchestrator.invoke(state)
-            trip_id = trip_store.create(plan_result)
-            # Pass the structured result to the model so it can narrate it,
-            # and include trip_id so the frontend can reference this trip.
-            result_for_model = {
+            trip_id     = trip_store.create(plan_result)
+            tool_content = json.dumps({
                 "trip_id": trip_id,
                 "stops":   plan_result["stops"],
                 "skipped": plan_result["skipped"],
                 "used_distance_fallback": plan_result["used_distance_fallback"],
-            }
-            tool_content = json.dumps(result_for_model)
+            })
         except Exception as e:
             tool_content = json.dumps({"error": f"Planning failed: {e}"})
 
@@ -377,23 +356,16 @@ async def chat(req: ChatRequest):
     def stream_gen():
         try:
             stream = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                stream=True,
+                model=GROQ_MODEL, messages=messages, stream=True,
             )
             for chunk in stream:
                 token = chunk.choices[0].delta.content
                 if token:
                     yield token
         except Exception as e:
-            # Headers are already sent by the time we're here, so this is
-            # the only way left to tell the user something went wrong --
-            # otherwise the connection just hangs with no data, which is
-            # exactly what was happening before this fix.
-            yield f"\n\n⚠️ I ran into a problem putting that into words: {e}"
+            yield f"\n\n⚠️ Something went wrong: {e}"
 
     if tool_calls:
         return StreamingResponse(stream_gen(), media_type="text/plain")
 
-    # No tool was called -- direct reply (e.g. a clarifying question), no streaming needed.
     return {"reply": msg.content or ""}

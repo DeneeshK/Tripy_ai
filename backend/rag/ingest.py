@@ -2,23 +2,27 @@
 ingest.py  --  builds the local Chroma vector store.
 
 Logic is identical to the original ingest_local.py:
-  - same metadata fields stored in Chroma
+  - same metadata fields stored in Chroma (name, lat, lng, category,
+    closed_on, regular_hours, special_hours, vibe_tags, avg_duration)
   - same document text: "Place: {name}. Vibe: {tags}. Insight: {review}"
   - same merge of landmarks.csv + vibe_tags.csv on id
 
-Only change: sentence-transformers replaces Gemini embeddings.
-No API key needed, runs fully offline after first download.
+Changes vs original:
+  - sentence-transformers replaces Gemini embeddings (no API key, runs offline)
+  - --stub flag uses a deterministic hash embedding for network-restricted
+    environments (CI, this sandbox, etc.) -- NOT for production use
 
 Usage:
-    python -m rag.ingest          # from backend/
+    python -m rag.ingest          # real sentence-transformers embeddings
+    python -m rag.ingest --stub   # offline test (wiring only, not quality)
 """
 
-import os
+import argparse
 import sys
+from pathlib import Path
+
 import chromadb
 import pandas as pd
-from pathlib import Path
-from sentence_transformers import SentenceTransformer
 
 BASE_DIR   = Path(__file__).resolve().parents[2]   # tripy_v2/
 DATA_DIR   = BASE_DIR / "data"
@@ -27,65 +31,90 @@ COLLECTION = "landmark_repository"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def run_ingest():
+def _real_embedder():
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer(MODEL_NAME)
+    return lambda text: model.encode(text).tolist()
+
+
+def _stub_embedder():
+    """Deterministic hash embedding. No language understanding -- wiring test only."""
+    import hashlib, re
+    def embed(text):
+        vec = [0.0] * 8
+        for tok in re.findall(r"[a-z0-9]+", text.lower()):
+            h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+            vec[h % 8] += 1.0
+        n = sum(v * v for v in vec) ** 0.5 or 1.0
+        return [v / n for v in vec]
+    return embed
+
+
+def run_ingest(use_stub: bool = False):
     print("Loading CSVs...")
     df_main  = pd.read_csv(DATA_DIR / "landmarks.csv")
     df_vibes = pd.read_csv(DATA_DIR / "vibe_tags.csv")
-
-    # Merge exactly like the original -- drop the thin vibe_tags from landmarks,
-    # use the richer ones from vibe_tags.csv
     df = pd.merge(df_main.drop(columns=["vibe_tags", "name"]), df_vibes, on="id")
     print(f"Loaded {len(df)} landmarks.")
 
-    print("Loading embedding model (downloads once from HuggingFace)...")
-    model = SentenceTransformer(MODEL_NAME)
+    if use_stub:
+        print("Using STUB embeddings (offline test -- not for production).")
+        embed = _stub_embedder()
+    else:
+        print(f"Loading embedding model ({MODEL_NAME}) -- downloads ~80MB once from HuggingFace...")
+        embed = _real_embedder()
 
-    chroma_client = chromadb.PersistentClient(path=str(VDB_PATH))
+    client = chromadb.PersistentClient(path=str(VDB_PATH))
     try:
-        chroma_client.delete_collection(COLLECTION)
+        client.delete_collection(COLLECTION)
     except Exception:
         pass
-    collection = chroma_client.get_or_create_collection(name=COLLECTION)
+    collection = client.get_or_create_collection(name=COLLECTION)
 
-    print(f"Starting ingestion for {len(df)} landmarks...")
+    print(f"Ingesting {len(df)} landmarks...")
     for _, row in df.iterrows():
         l_id = str(row["id"])
         name = row["name"]
 
         txt_path = DATA_DIR / "landmark_reviews" / f"{l_id}.txt"
-        if txt_path.exists():
-            review_content = txt_path.read_text(encoding="utf-8")
-        else:
-            review_content = f"A {row['category']} located in Thiruvananthapuram."
+        review_content = txt_path.read_text(encoding="utf-8") if txt_path.exists() \
+            else f"A {row['category']} located in Thiruvananthapuram."
 
-        # Same document text as original
-        text_to_vectorize = f"Place: {name}. Vibe: {row['vibe_tags']}. Insight: {review_content}"
+        doc_text = f"Place: {name}. Vibe: {row['vibe_tags']}. Insight: {review_content}"
+        vector   = embed(doc_text)
 
-        vector = model.encode(text_to_vectorize).tolist()
-
-        # Same metadata dict as original + special_hours (it's in the CSV, engine needs it)
         metadata = {
             "name":          str(name),
             "lat":           float(row["lat"]),
             "lng":           float(row["lng"]),
             "category":      str(row["category"]),
-            "closed_on":     str(row["closed_on"])     if pd.notna(row["closed_on"])     else "None",
-            "regular_hours": str(row["regular_hours"]) if pd.notna(row["regular_hours"]) else "Unknown",
-            "special_hours": str(row["special_hours"]) if pd.notna(row.get("special_hours")) else "None",
+            "closed_on":     str(row["closed_on"])     if pd.notna(row["closed_on"])           else "None",
+            "regular_hours": str(row["regular_hours"]) if pd.notna(row["regular_hours"])       else "Unknown",
+            "special_hours": str(row["special_hours"]) if pd.notna(row.get("special_hours"))   else "None",
             "vibe_tags":     str(row["vibe_tags"]),
-            "avg_duration":  float(row["avg_duration"]) if pd.notna(row["avg_duration"]) else 1.0,
+            "avg_duration":  float(row["avg_duration"]) if pd.notna(row["avg_duration"])       else 1.0,
         }
 
         collection.add(
             ids=[l_id],
             embeddings=[vector],
-            documents=[text_to_vectorize],
+            documents=[doc_text],
             metadatas=[metadata],
         )
-        print(f"  Ingested {l_id}: {name}")
+        print(f"  {l_id}: {name}")
 
-    print(f"\nDone. {collection.count()} places in '{COLLECTION}' at {VDB_PATH}")
+    count = collection.count()
+    if count != len(df):
+        raise RuntimeError(
+            f"Ingest mismatch: {len(df)} in CSV but only {count} landed in Chroma. "
+            f"Delete {VDB_PATH} and retry."
+        )
+    print(f"\nDone -- {count} places in '{COLLECTION}' at {VDB_PATH}")
 
 
 if __name__ == "__main__":
-    run_ingest()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stub", action="store_true",
+                        help="Use stub embeddings (no internet needed, wiring test only)")
+    args = parser.parse_args()
+    run_ingest(use_stub=args.stub)
