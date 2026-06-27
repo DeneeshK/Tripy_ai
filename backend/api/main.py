@@ -243,30 +243,59 @@ def get_route(coords: str):
 
 # ── /api/chat  (Groq streaming + tool calling) ────────────────────────────────
 
-SYSTEM_PROMPT = """You are Tripy, a friendly trip-planning assistant for Trivandrum, Kerala.
+def _build_system_prompt() -> str:
+    """Dynamic -- called fresh per request so the model always has the real current time."""
+    now = datetime.now()
+    return f"""You are Tripy, a friendly trip-planning assistant for Trivandrum, Kerala.
 
-WHEN TO ASK VS WHEN TO BUILD:
-Only ask a clarifying question if the request is genuinely ambiguous (no time
-window, no interests at all). If they've given you enough -- even a rough time
-and a vibe -- call plan_my_day immediately. Default to "today" if no day is
-mentioned. At most one question, only when truly needed.
+CURRENT DATE AND TIME: {now.strftime('%A, %d %B %Y at %I:%M %p')} (IST)
 
-AFTER THE PLAN COMES BACK, the exact timing for each stop and the exact skip
-reasons are already shown as structured cards in the UI -- don't restate them.
-Instead:
-  - A brief warm overview of the day (one or two lines).
-  - For each stop: what the place IS and why it matches what they asked for,
-    drawing from its `insight` field (real visitor-review material). Paraphrase
-    naturally -- don't invent details not in there.
-  - For what didn't make the cut: a brief sentence or two covering what kind
-    of places they were and roughly why, without repeating exact minute figures.
-  - If travel times are estimated rather than from live road data, say so once.
+━━ TIME AWARENESS ━━
+Always compare the requested trip window against the current time above BEFORE
+calling plan_my_day. Three cases:
 
-NEVER mention internal field or variable names (used_distance_fallback,
-skipped_reason, JSON keys, etc.) -- plain English only.
-FORMATTING: markdown is fine -- **bold** for place names, bullet lists.
-Keep it warm and conversational.
+1. ENTIRE window already past (e.g. user says 9am-6pm but it's now 7pm):
+   Don't call plan_my_day. Tell them the window has passed and ask: are you
+   planning for tomorrow, or a specific date?
+
+2. Start is past but end is still ahead (e.g. 9am-6pm requested, now it's 4pm):
+   Call plan_my_day, but use the CURRENT time as trip_start (not 9am), and
+   tell the user explicitly: "Since it's already {now.strftime('%I:%M %p')}, I'll
+   plan from now until your end time." Never silently use a past start time.
+
+3. Window is entirely in the future: proceed normally without comment.
+
+━━ DATE RESOLUTION ━━
+If the user mentions any specific date, resolve it to YYYY-MM-DD and pass it
+as the `date` parameter. Examples:
+- "the 14th" or "14th" → assume CURRENT month and year → {now.strftime('%Y-%m')}-14
+  (if that date is already past this month, use next month instead)
+- "June 14" → {now.year}-06-14
+- "next Friday" → compute from today ({now.strftime('%A %d %B')})
+- "today" → {now.strftime('%Y-%m-%d')}
+- "tomorrow" → {(datetime.now() + __import__('datetime').timedelta(days=1)).strftime('%Y-%m-%d')}
+The backend extracts the correct weekday from this date automatically, so you
+don't also need to pass `day` when `date` is provided.
+
+━━ CONVERSATION MEMORY ━━
+You have the full conversation history. Never re-ask for something already given.
+If the user has described their interests and time window earlier in the chat,
+carry that forward -- don't start from scratch on each message.
+
+━━ AFTER THE PLAN COMES BACK ━━
+The exact timing cards and skip-reason cards are already shown in the UI.
+Your reply should cover the part cards can't:
+  - Brief warm overview (1-2 lines).
+  - Per stop: what the place IS and why it fits what they asked for, drawing
+    from its `insight` field (real visitor-review material, not invented).
+  - Skipped places: brief sentence on what kind they were and roughly why.
+  - If travel times are estimated, mention it once.
+
+NEVER mention internal field names (used_distance_fallback, skipped_reason,
+JSON keys, etc.) -- plain English only.
+FORMATTING: **bold** place names, bullet lists are fine. Warm and conversational.
 """
+
 
 PLAN_TOOL = {
     "type": "function",
@@ -276,10 +305,11 @@ PLAN_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "query":      {"type": "string", "description": "What the traveller wants to see/do."},
-                "trip_start": {"type": "string", "description": "Start time HH:MM (24h)."},
-                "trip_end":   {"type": "string", "description": "End time HH:MM (24h)."},
-                "day":        {"type": "string", "description": "Weekday name, 'today', or 'tomorrow'."},
+                "query":      {"type": "string",  "description": "What the traveller wants to see/do."},
+                "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). Use current time if the user's requested start has already passed."},
+                "trip_end":   {"type": "string",  "description": "End time HH:MM (24h)."},
+                "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
+                "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th'. The backend resolves the correct weekday from this."},
             },
             "required": ["query", "trip_start", "trip_end"],
         },
@@ -292,7 +322,7 @@ async def chat(req: ChatRequest):
     if groq_client is None:
         raise HTTPException(500, "GROQ_API_KEY not set in .env")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": _build_system_prompt()}]
     messages += [{"role": m.role, "content": m.content} for m in req.messages]
 
     try:
@@ -323,8 +353,22 @@ async def chat(req: ChatRequest):
 
     for tc in tool_calls:
         try:
-            args     = json.loads(tc.function.arguments)
-            day_name = _resolve_day_name(args.get("day"))
+            args = json.loads(tc.function.arguments)
+
+            # Resolve weekday from `date` (YYYY-MM-DD) if given, else from `day` name.
+            # `date` takes priority because it's unambiguous -- the model passes it
+            # when the user mentions any specific date, even a partial one like "the 14th".
+            if args.get("date"):
+                try:
+                    from datetime import date as dt_date
+                    d         = dt_date.fromisoformat(args["date"])
+                    wi        = d.weekday()
+                    day_name  = WEEKDAYS[wi]
+                except ValueError:
+                    day_name  = _resolve_day_name(args.get("day"))
+            else:
+                day_name = _resolve_day_name(args.get("day"))
+
             state: TripState = {
                 "mode":          "plan",
                 "query":         args["query"],
@@ -335,12 +379,12 @@ async def chat(req: ChatRequest):
                 "trip_start":    args.get("trip_start", "09:00"),
                 "trip_end":      args.get("trip_end",   "18:00"),
             }
-            plan_result = orchestrator.invoke(state)
-            trip_id     = trip_store.create(plan_result)
+            plan_result  = orchestrator.invoke(state)
+            trip_id      = trip_store.create(plan_result)
             tool_content = json.dumps({
-                "trip_id": trip_id,
-                "stops":   plan_result["stops"],
-                "skipped": plan_result["skipped"],
+                "trip_id":               trip_id,
+                "stops":                 plan_result["stops"],
+                "skipped":               plan_result["skipped"],
                 "used_distance_fallback": plan_result["used_distance_fallback"],
             })
         except Exception as e:

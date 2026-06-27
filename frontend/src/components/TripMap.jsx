@@ -2,25 +2,6 @@ import React, { useEffect, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 
-// ─── Inject animation CSS once at module load ─────────────────────────────────
-// The dashed-line animation targets the SVG path Leaflet creates when className
-// is applied -- this is the only way to animate it, since Leaflet manages the
-// DOM element directly.
-const ROUTE_CSS = `
-  .tripy-route-line {
-    animation: tripy-flow 0.7s linear infinite;
-  }
-  @keyframes tripy-flow {
-    to { stroke-dashoffset: -22; }
-  }
-`
-if (typeof document !== 'undefined' && !document.getElementById('tripy-map-css')) {
-  const style = document.createElement('style')
-  style.id = 'tripy-map-css'
-  style.textContent = ROUTE_CSS
-  document.head.appendChild(style)
-}
-
 // ─── Tile layer definitions ───────────────────────────────────────────────────
 function buildLayers(stadiaKey, owmKey) {
   const sk = stadiaKey ? `?api_key=${stadiaKey}` : ''
@@ -236,7 +217,10 @@ export default function TripMap({ userLocation, stops, route, stadiaApiKey = '',
   const baseLayer   = layers.base.find(l => l.id === activeBaseId) || layers.base[0]
   const weatherLayer = activeWeatherId ? layers.weather.find(l => l.id === activeWeatherId) : null
   const dark        = activeBaseId === 'dark'
-  const routeColor  = dark ? '#93c5fd' : '#2563eb'
+  // Google Maps uses roughly #1a73e8 for its route line -- a highly-saturated
+  // blue that reads clearly against any base map. On dark maps we lighten it
+  // slightly so it still pops against the near-black background.
+  const routeColor  = dark ? '#60b4ff' : '#1a6bef'
   const center      = userLocation || [8.5241, 76.9366]
 
   return (
@@ -261,17 +245,12 @@ export default function TripMap({ userLocation, stops, route, stadiaApiKey = '',
         </Marker>
       ))}
 
-      {/* Animated dashed route line -- dashArray creates the segments,
-          the CSS animation on .tripy-route-line moves stroke-dashoffset
-          continuously to show direction of travel */}
       {route?.coordinates && (
         <Polyline
           positions={route.coordinates.map(([lng, lat]) => [lat, lng])}
           color={routeColor}
-          weight={4}
-          opacity={0.85}
-          dashArray="12 10"
-          className="tripy-route-line"
+          weight={5}
+          opacity={0.9}
         />
       )}
 
