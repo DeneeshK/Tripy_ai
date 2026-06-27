@@ -147,28 +147,64 @@ function MealCard({ card, selected, onAdd, busy }) {
   )
 }
 
+// "Let Tripy choose": of the (already near-route) suggestions, pick the
+// best-rated one, tie-broken by least detour.
+function bestPick(list) {
+  return list.reduce((a, b) => {
+    const ra = Number(a.rating) || 0, rb = Number(b.rating) || 0
+    if (rb !== ra) return rb > ra ? b : a
+    return (b.detour_min ?? 0) < (a.detour_min ?? 0) ? b : a
+  }, list[0])
+}
+
 function MealSuggestions({ suggestions, selections, onAdd, busy }) {
   const meals = MEAL_ORDER.filter(m => suggestions?.[m]?.length)
   if (!meals.length) return null
   return (
     <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%' }}>
-      {meals.map(meal => (
-        <div key={meal} style={{ marginBottom: '8px' }}>
-          <div style={{
-            fontSize: '11px', fontWeight: 700, color: '#b45309',
-            textTransform: 'uppercase', letterSpacing: '0.04em', margin: '6px 0 6px 4px',
-          }}>
-            🍽 {MEAL_TITLES[meal]} — pick one
+      {meals.map(meal => {
+        const list   = suggestions[meal]
+        const picked = selections?.[meal]
+        return (
+          <div key={meal} style={{ marginBottom: '8px' }}>
+            <div style={{
+              fontSize: '11px', fontWeight: 700, color: '#b45309',
+              textTransform: 'uppercase', letterSpacing: '0.04em', margin: '6px 0 6px 4px',
+            }}>
+              🍽 {MEAL_TITLES[meal]} — pick one
+            </div>
+
+            {!picked && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+                background: '#fffbeb', border: '1px dashed #fbbf24', borderRadius: '8px',
+                padding: '7px 10px', marginBottom: '8px',
+              }}>
+                <span style={{ fontSize: '12px', color: '#92400e', flex: 1 }}>
+                  You haven't picked a {MEAL_TITLES[meal].toLowerCase()} spot yet.
+                </span>
+                <button
+                  onClick={() => onAdd(meal, bestPick(list).id)} disabled={busy}
+                  style={{
+                    background: '#b45309', color: '#fff', border: 'none', borderRadius: '8px',
+                    padding: '5px 11px', cursor: busy ? 'default' : 'pointer',
+                    fontSize: '12px', fontWeight: 700, opacity: busy ? 0.6 : 1, whiteSpace: 'nowrap',
+                  }}>
+                  ✨ Let Tripy choose
+                </button>
+              </div>
+            )}
+
+            {list.map(card => (
+              <MealCard
+                key={card.id} card={card} busy={busy}
+                selected={picked === card.id}
+                onAdd={() => onAdd(meal, card.id)}
+              />
+            ))}
           </div>
-          {suggestions[meal].map(card => (
-            <MealCard
-              key={card.id} card={card} busy={busy}
-              selected={selections?.[meal] === card.id}
-              onAdd={() => onAdd(meal, card.id)}
-            />
-          ))}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -321,10 +357,12 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     panel: {
       display: 'flex', flexDirection: 'column', height: '100%',
       background: '#fff', borderRight: '1px solid #e5e7eb',
+      borderRadius: '16px', overflow: 'hidden',
     },
     header: {
-      padding: '16px 20px', borderBottom: '1px solid #e5e7eb',
-      background: '#1e3a5f',
+      display: 'flex', alignItems: 'center', gap: '12px',
+      padding: '12px 16px', borderBottom: '1px solid #1f2937',
+      background: '#000',
     },
     title: { color: '#fff', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.3px' },
     sub:   { color: '#93c5fd', fontSize: '12px', marginTop: '2px' },
@@ -374,8 +412,8 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
-        <div style={styles.title}>Tripy 🗺️</div>
-        <div style={styles.sub}>Your Trivandrum day planner</div>
+        <img src="/logo.png" alt="Tripy logo" style={{ height: '88px', width: 'auto', display: 'block' }} />
+        <img src="/title.png" alt="Tripy" style={{ height: '90px', width: 'auto', display: 'block' }} />
       </div>
 
       <div style={styles.msgs}>

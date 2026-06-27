@@ -21,6 +21,17 @@ from __future__ import annotations
 from typing import List, Tuple, Optional
 
 from .hours import resolve_for_day, best_window_in_span
+from .distance_matrix import time_matrix_with_fallback
+
+
+def _to_min(hhmm: str) -> int:
+    h, m = map(int, str(hhmm).split(":"))
+    return h * 60 + m
+
+
+def _hhmm(mins) -> str:
+    mins = int(round(mins))
+    return f"{mins // 60:02d}:{mins % 60:02d}"
 
 # Meal -> (slot_open_min, slot_close_min), minutes from midnight.
 MEAL_SLOTS = {
@@ -33,7 +44,7 @@ MEAL_LABELS = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Supper"}
 MEAL_ORDER = ["breakfast", "lunch", "dinner"]
 
 MEAL_DURATION_CAP_MIN = 60      # don't let a 1.5h fine-dining avg_duration blow up the day
-N_SUGGESTIONS = 4               # restaurants suggested per meal
+N_SUGGESTIONS = 5               # restaurants suggested per meal (bump to 10 for more choice)
 
 FOOD_CATEGORIES = {"Restaurant", "Cafe", "Lounge"}
 
@@ -131,3 +142,84 @@ def suggestion_card(place: dict, detour_min: float, added: bool) -> dict:
         "detour_min": detour_min,
         "added":      added,
     }
+
+
+def resolve_meal_window(meal: str, custom_hhmm: Optional[str],
+                        trip_start_min: int, trip_end_min: int) -> Optional[dict]:
+    """The time a meal should happen, honouring a user-specified clock time when
+    given (e.g. they must eat lunch at 13:00 for medication). Returns a dict with
+    `anchor` (when to schedule / where it sits in the route), `elig` (the span a
+    restaurant must be open within to qualify), or None if it can't fit the trip.
+    """
+    if custom_hhmm:
+        t = _to_min(custom_hhmm)
+        if not (trip_start_min <= t <= trip_end_min):
+            return None
+        return {"anchor": t, "elig": (max(trip_start_min, t - 30), min(trip_end_min, t + 30))}
+    slot = MEAL_SLOTS[meal]
+    a, b = max(slot[0], trip_start_min), min(slot[1], trip_end_min)
+    if a >= b:
+        return None
+    return {"anchor": a, "elig": (a, b)}
+
+
+def insert_meals_into_route(home, base_stops, meal_specs, trip_start_min,
+                            matrix_fn=time_matrix_with_fallback):
+    """Insert chosen restaurants into an ALREADY-FIXED sightseeing route without
+    changing the sightseeing stops or their order -- the day's plan stays the
+    same; meals just slot into the gaps and push later stops a little later.
+
+    base_stops: the locked sightseeing stops (each a dict with lat/lng/arrive_at/
+                avg_duration_hrs ...).
+    meal_specs: [{"place": food_dict, "meal": "lunch", "anchor": 780, "duration_min": 60}]
+
+    Returns (ordered_stops, runs_late_bool).
+    """
+    items = []
+    for s in base_stops:
+        items.append({
+            "kind": "stop", "data": s, "anchor": _to_min(s["arrive_at"]),
+            "lat": s["lat"], "lng": s["lng"],
+            "dur": int(round(float(s.get("avg_duration_hrs", 1.0)) * 60)),
+        })
+    for ms in meal_specs:
+        p = ms["place"]
+        items.append({
+            "kind": "meal", "data": p, "meal": ms["meal"], "anchor": ms["anchor"],
+            "lat": p["lat"], "lng": p["lng"], "dur": ms["duration_min"],
+        })
+
+    # Stable sort by intended time: sightseeing keeps its order (its anchors are
+    # the already-planned arrival times); meals drop in at their own time.
+    items.sort(key=lambda x: x["anchor"])
+
+    points = [home] + [(it["lat"], it["lng"]) for it in items]
+    matrix, _used = matrix_fn(points)
+
+    out, t, runs_late = [], trip_start_min, False
+    for i, it in enumerate(items, start=1):
+        arrive = t + matrix[i - 1][i]
+        if it["kind"] == "meal":
+            arrive = max(arrive, it["anchor"])   # wait until the meal time if early
+        depart = arrive + it["dur"]
+        order = len(out) + 1
+        if it["kind"] == "stop":
+            s = dict(it["data"])
+            s.update(order=order, arrive_at=_hhmm(arrive),
+                     visit_starts=_hhmm(arrive), visit_ends=_hhmm(depart))
+            out.append(s)
+        else:
+            p = it["data"]
+            out.append({
+                "order": order, "id": p["id"], "name": p["name"],
+                "lat": p["lat"], "lng": p["lng"],
+                "arrive_at": _hhmm(arrive), "visit_starts": _hhmm(arrive),
+                "visit_ends": _hhmm(depart), "avg_duration_hrs": it["dur"] / 60,
+                "relevance": 1.0, "is_meal": True, "meal": it["meal"],
+                "vibe": p.get("vibe", ""), "insight": p.get("insight", ""),
+                "rating": p.get("rating", 0.0), "status": "", "availability_note": "",
+                "timing_reason": f"{MEAL_LABELS[it['meal']]} — fitted in around {_hhmm(arrive)} "
+                                 f"between your stops, without changing the rest of the plan.",
+            })
+        t = depart
+    return out, runs_late

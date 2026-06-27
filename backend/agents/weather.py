@@ -132,3 +132,61 @@ def check_weather_for_stops(
             ))
 
     return warnings, False, None
+
+
+# ---------------------------------------------------------------------------
+# Always-on widget data: current conditions + EVERY stop's forecast (not just
+# the rainy ones). Powers the persistent weather box on the map.
+# ---------------------------------------------------------------------------
+
+def fetch_current(lat: float, lng: float, timeout: float = 8.0) -> dict:
+    """Current conditions at a point (the user's live location)."""
+    params = (
+        f"latitude={lat:.6f}&longitude={lng:.6f}"
+        f"&current=temperature_2m,weather_code,precipitation&timezone=auto"
+    )
+    with urllib.request.urlopen(f"{OPEN_METEO_BASE}?{params}", timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    cur = data.get("current", {})
+    code = cur.get("weather_code")
+    return {
+        "temperature":  cur.get("temperature_2m"),
+        "weather_code": code,
+        "description":  describe_weather_code(code) if code is not None else "unknown",
+        "precipitation": cur.get("precipitation"),
+        "is_wet":       bool(code in RAIN_CODES) if code is not None else False,
+        "is_thunderstorm": bool(code in THUNDERSTORM_CODES) if code is not None else False,
+    }
+
+
+def conditions_for_stops(stops: List[dict], trip_date: datetime) -> Tuple[List[dict], bool, Optional[str]]:
+    """Per-stop forecast for ALL stops (the widget shows the full day, not only
+    the warnings). Returns (rows, fetch_failed, error_message)."""
+    rows: List[dict] = []
+    for stop in stops:
+        try:
+            h, m = map(int, stop["arrive_at"].split(":"))
+            target_dt = trip_date.replace(hour=h, minute=m, second=0, microsecond=0)
+            data = fetch_hourly_forecast(stop["lat"], stop["lng"])
+        except Exception as e:
+            return rows, True, f"Couldn't reach the weather service: {e}"
+
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        idx = _nearest_hour_index(times, target_dt)
+        if idx is None:
+            continue
+        code = hourly.get("weather_code", [None])[idx] if idx < len(hourly.get("weather_code", [])) else None
+        prob = hourly.get("precipitation_probability", [0])[idx] if idx < len(hourly.get("precipitation_probability", [])) else 0
+        temp = hourly.get("temperature_2m", [None])[idx] if idx < len(hourly.get("temperature_2m", [])) else None
+        rows.append({
+            "stop_name": stop["name"],
+            "arrival_time": stop["arrive_at"],
+            "weather_code": code or 0,
+            "description": describe_weather_code(code or 0),
+            "precipitation_probability": prob or 0,
+            "temperature": temp,
+            "is_thunderstorm": bool(code in THUNDERSTORM_CODES),
+            "is_warning": bool(code in RAIN_CODES or (prob is not None and prob >= PRECIP_PROBABILITY_THRESHOLD)),
+        })
+    return rows, False, None

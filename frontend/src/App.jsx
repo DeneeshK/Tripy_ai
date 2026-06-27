@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import TripMap from './components/TripMap'
 import ChatPanel from './components/ChatPanel'
+import WeatherWidget from './components/WeatherWidget'
 
 const API = ''
 const POLL_INTERVAL_MS = 30 * 60 * 1000  // 30 minutes
@@ -125,9 +126,13 @@ export default function App() {
   }
 
   const styles = {
-    root: { display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' },
-    left: { width: '380px', flexShrink: 0, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' },
-    right: { flex: 1, position: 'relative' },
+    root: { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' },
+    left: {
+      position: 'absolute', top: '16px', left: '16px', bottom: '16px', width: '380px',
+      display: 'flex', flexDirection: 'column', overflow: 'hidden', zIndex: 500,
+      borderRadius: '16px', boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
+    },
+    right: { position: 'absolute', inset: 0 },
 
     weatherCard: {
       position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
@@ -196,6 +201,13 @@ export default function App() {
         <ChatPanel userLocation={userLocation} onPlanReady={onPlanReady} />
       </div>
       <div style={styles.right}>
+
+        <WeatherWidget
+          userLocation={userLocation}
+          stops={stops}
+          onReplan={handleReplan}
+          replanLoading={replanLoading}
+        />
 
         {showWarning && (
           <div style={styles.weatherCard}>

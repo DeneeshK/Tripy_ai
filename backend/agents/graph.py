@@ -35,7 +35,11 @@ from agents.categories import apply_weather_bias
 from rag.search import (
     smart_search, plan_itinerary, get_food_places, build_meal_suggestions, WEEKDAYS,
 )
-from engine.meals import MEAL_ORDER, meal_window_for_place, FOOD_CATEGORIES
+from engine.meals import (
+    MEAL_ORDER, MEAL_LABELS, MEAL_DURATION_CAP_MIN, FOOD_CATEGORIES,
+    resolve_meal_window, insert_meals_into_route,
+)
+from engine.hours import resolve_for_day, best_window_in_span
 
 
 def _weekday_index(day_name) -> int:
@@ -51,91 +55,107 @@ def _to_mins(t: str) -> int:
 
 
 def _resolve_meal_plan(state: TripState, weekday_index: int, ts_min: int, te_min: int):
-    """Returns (requested_meals, diet, selections, meal_anchors).
-
-    Folds a user-named restaurant (`specific_food_place`) into the selections as
-    an extra meal so it is always force-included, regardless of the meal answer.
-    """
+    """Normalise the meal inputs. Returns (requested_meals, diet, selections,
+    meal_times). Folds a user-named restaurant (`specific_food_place`) into the
+    selections so it is always force-included."""
     requested_meals = list(state.get("requested_meals") or [])
     diet = state.get("diet")
     selections = dict(state.get("meal_selections") or {})
-    food_by_id = {p["id"]: p for p in get_food_places()}
+    meal_times = dict(state.get("meal_times") or {})
 
     named = (state.get("specific_food_place") or "").strip().lower()
     if named:
-        match = next((p for p in food_by_id.values() if named in p["name"].lower()), None)
+        match = next((p for p in get_food_places() if named in p["name"].lower()), None)
         if match and match["id"] not in selections.values():
             for meal in (requested_meals or MEAL_ORDER):
-                if meal_window_for_place(meal, match["closed_on"], match["regular_hours"],
-                                         match["special_hours"], weekday_index, ts_min, te_min):
+                if resolve_meal_window(meal, meal_times.get(meal), ts_min, te_min):
                     selections[meal] = match["id"]
                     if meal not in requested_meals:
                         requested_meals.append(meal)
                     break
+    return requested_meals, diet, selections, meal_times
 
-    anchors = [{"place": food_by_id[pid], "meal": meal}
-               for meal, pid in selections.items() if pid in food_by_id]
-    return requested_meals, diet, selections, anchors
+
+def _build_meal_specs(selections, meal_times, food_by_id, weekday_index, ts_min, te_min):
+    """Turn the user's chosen restaurants into insertion specs, dropping (with a
+    reason) any pick that can't actually be served at its meal time."""
+    specs, skipped = [], []
+    for meal, pid in selections.items():
+        p = food_by_id.get(pid)
+        if not p:
+            continue
+        win = resolve_meal_window(meal, meal_times.get(meal), ts_min, te_min)
+        resolved = resolve_for_day(p["closed_on"], p["regular_hours"], p["special_hours"], weekday_index)
+        if win is None or best_window_in_span(resolved, win["elig"][0], win["elig"][1]) is None:
+            skipped.append({
+                "order": None, "id": pid, "name": p["name"], "lat": p["lat"], "lng": p["lng"],
+                "relevance": 1.0, "vibe": p.get("vibe", ""), "insight": p.get("insight", ""),
+                "status": "Skipped", "is_meal": True, "meal": meal,
+                "skipped_reason": f"{p['name']} can't be served at your {MEAL_LABELS.get(meal, meal).lower()} time today",
+            })
+            continue
+        dur = min(int(round(float(p.get("avg_duration", 1.0)) * 60)), MEAL_DURATION_CAP_MIN)
+        specs.append({"place": p, "meal": meal, "anchor": win["anchor"], "duration_min": dur})
+    return specs, skipped
 
 
 def plan_trip_node(state: TripState) -> TripState:
-    """Trip Planning Agent: runs search + the OR-Tools itinerary engine, then
-    (if meals were requested) computes per-meal restaurant suggestions near the route."""
-    exclude_ids = set(state.get("exclude_ids", []) or [])
-
-    candidates = smart_search(
-        user_query    = state["query"],
-        user_lat      = state["home_lat"],
-        user_lng      = state["home_lng"],
-        target_time   = state["trip_start"],
-        target_day    = state.get("day"),
-        trip_end_time = state["trip_end"],
-        exclude_ids   = exclude_ids,
-    )
-    candidates = apply_weather_bias(candidates, state.get("prefer_indoor", False))
-    # The main itinerary is sightseeing-only; food now has its own meal flow
-    # (suggestions + a user-named anchor), so restaurants don't sneak in as
-    # sightseeing stops just because they matched the query semantically.
-    candidates = [c for c in candidates if c.get("category") not in FOOD_CATEGORIES]
-
+    """Trip Planning Agent. Two phases so the sightseeing plan never moves when a
+    meal is added:
+      1. Plan the sightseeing route once with OR-Tools and LOCK it (cached in
+         state['base_stops']). Re-used as-is when only meal picks change.
+      2. Insert the chosen restaurants into that fixed route by time/location,
+         shifting later stops a little but never changing the sightseeing order.
+    """
     weekday_index = _weekday_index(state.get("day"))
     ts_min, te_min = _to_mins(state["trip_start"]), _to_mins(state["trip_end"])
-    requested_meals, diet, selections, anchors = _resolve_meal_plan(state, weekday_index, ts_min, te_min)
+    home = (state["home_lat"], state["home_lng"])
 
-    result = plan_itinerary(
-        candidates   = candidates,
-        start_lat    = state["home_lat"],
-        start_lng    = state["home_lng"],
-        trip_start   = state["trip_start"],
-        trip_end     = state["trip_end"],
-        meal_anchors = anchors,
-    )
+    # ── Phase 1: the locked sightseeing base ────────────────────────────────
+    reuse = state.get("reuse_base") and state.get("base_stops") is not None
+    if reuse:
+        base_stops   = state["base_stops"]
+        base_skipped = state.get("base_skipped", [])
+    else:
+        candidates = smart_search(
+            user_query=state["query"], user_lat=home[0], user_lng=home[1],
+            target_time=state["trip_start"], target_day=state.get("day"),
+            trip_end_time=state["trip_end"], exclude_ids=set(state.get("exclude_ids", []) or []),
+        )
+        candidates = apply_weather_bias(candidates, state.get("prefer_indoor", False))
+        # Sightseeing only -- restaurants come exclusively through the meal flow.
+        candidates = [c for c in candidates if c.get("category") not in FOOD_CATEGORIES]
+        base = plan_itinerary(candidates, home[0], home[1], state["trip_start"], state["trip_end"])
+        base_stops, base_skipped = base["stops"], base["skipped"]
+        state["base_stops"] = base_stops
+        state["base_skipped"] = base_skipped
+        state["used_distance_fallback"] = base["used_distance_fallback"]
 
-    state["stops"] = result["stops"]
-    state["skipped"] = result["skipped"]
-    state["used_distance_fallback"] = result["used_distance_fallback"]
+    # ── Phase 2: insert the chosen meals into that fixed route ───────────────
+    requested_meals, diet, selections, meal_times = _resolve_meal_plan(state, weekday_index, ts_min, te_min)
+    food_by_id = {p["id"]: p for p in get_food_places()}
+    specs, meal_skipped = _build_meal_specs(selections, meal_times, food_by_id, weekday_index, ts_min, te_min)
 
-    # Persist any normalisation done above (named place may have added a meal).
+    if specs:
+        final_stops, _runs_late = insert_meals_into_route(home, base_stops, specs, ts_min)
+    else:
+        final_stops = base_stops
+
+    state["stops"] = final_stops
+    state["skipped"] = list(base_skipped) + meal_skipped
     state["requested_meals"] = requested_meals
     state["meal_selections"] = selections
-    if requested_meals:
-        state["meal_suggestions"] = build_meal_suggestions(
-            home            = (state["home_lat"], state["home_lng"]),
-            base_stops      = result["stops"],
-            requested_meals = requested_meals,
-            diet            = diet,
-            weekday_index   = weekday_index,
-            trip_start_min  = ts_min,
-            trip_end_min    = te_min,
-            selections      = selections,
-        )
-    else:
-        state["meal_suggestions"] = {}
+    state["meal_times"] = meal_times
+    state["meal_suggestions"] = build_meal_suggestions(
+        home=home, base_stops=base_stops, requested_meals=requested_meals, diet=diet,
+        weekday_index=weekday_index, trip_start_min=ts_min, trip_end_min=te_min,
+        selections=selections, meal_times=meal_times,
+    ) if requested_meals else {}
 
     state["last_planned_at"] = datetime.now().isoformat(timespec="seconds")
-    # Replanning clears any old warning -- it was about the plan that just changed.
     state["weather_warnings"] = []
     state["needs_replan"] = False
+    state["reuse_base"] = False   # one-shot: a later replan must recompute the base
     return state
 
 

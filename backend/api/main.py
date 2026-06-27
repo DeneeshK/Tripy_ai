@@ -68,11 +68,17 @@ class PlanRequest(BaseModel):
     day:        Optional[str]       = None
     meals:      Optional[list[str]] = None
     diet:       Optional[str]       = None
+    meal_times: Optional[dict]      = None
     food_place: Optional[str]       = None
 
 class TripMealsRequest(BaseModel):
     # meal -> chosen restaurant id, e.g. {"lunch": "41", "dinner": "17"}
     selections: dict = {}
+
+class WeatherRequest(BaseModel):
+    lat:   float
+    lng:   float
+    stops: list[dict] = []   # [{name, lat, lng, arrive_at}] for the per-stop forecast
 
 class ChatMessage(BaseModel):
     role:    str
@@ -112,6 +118,34 @@ def _weekday_index(day_name: str) -> int:
         return datetime.now().weekday()
 
 
+def _norm_meals(meals) -> list:
+    """Canonicalise meal names from the model/UI. 'supper' -> 'dinner', dedupe,
+    drop anything unrecognised, so downstream MEAL_SLOTS lookups always match."""
+    alias = {"supper": "dinner", "brunch": "lunch"}
+    valid = {"breakfast", "lunch", "dinner"}
+    out = []
+    for m in (meals or []):
+        m2 = str(m).strip().lower()
+        m2 = alias.get(m2, m2)
+        if m2 in valid and m2 not in out:
+            out.append(m2)
+    return out
+
+
+def _norm_meal_times(d) -> dict:
+    """{'supper': '20:00'} -> {'dinner': '20:00'}. Drops empty/invalid entries."""
+    alias = {"supper": "dinner", "brunch": "lunch"}
+    valid = {"breakfast", "lunch", "dinner"}
+    out = {}
+    for k, v in (d or {}).items():
+        if not v:
+            continue
+        k2 = alias.get(str(k).strip().lower(), str(k).strip().lower())
+        if k2 in valid:
+            out[k2] = str(v).strip()
+    return out
+
+
 def _now_min(simulated_now: Optional[str]) -> int:
     if simulated_now:
         h, m = map(int, simulated_now.split(":"))
@@ -147,8 +181,9 @@ def plan(req: PlanRequest):
         "weekday_index":   _weekday_index(day_name),
         "trip_start":      req.trip_start,
         "trip_end":        req.trip_end,
-        "requested_meals": req.meals or [],
+        "requested_meals": _norm_meals(req.meals),
         "diet":            req.diet,
+        "meal_times":      _norm_meal_times(req.meal_times),
         "specific_food_place": req.food_place,
     }
     result   = orchestrator.invoke(state)
@@ -181,6 +216,8 @@ def trip_meals(trip_id: str, req: TripMealsRequest):
     state["requested_meals"] = sorted(
         set(state.get("requested_meals") or []) | set(selections.keys())
     )
+    # Keep the already-planned sightseeing route exactly as-is; only (re)insert meals.
+    state["reuse_base"] = True
 
     result = orchestrator.invoke(state)
     trip_store.save(trip_id, result)
@@ -287,6 +324,31 @@ def get_route(coords: str):
     except Exception as e:
         raise HTTPException(502, f"Route fetch failed: {e}")
 
+# ── /api/weather  (persistent widget: current + per-stop forecast) ────────────
+
+@app.post("/api/weather")
+def weather(req: WeatherRequest):
+    """Powers the always-on weather box. Returns the current conditions at the
+    user's location plus a forecast for every planned stop. Degrades gracefully
+    (failed=True) if the weather service can't be reached."""
+    from agents.weather import fetch_current, conditions_for_stops
+
+    out = {"current": None, "stops": [], "needs_replan": False, "failed": False, "error": None}
+    try:
+        out["current"] = fetch_current(req.lat, req.lng)
+    except Exception as e:
+        out["failed"] = True
+        out["error"]  = f"Couldn't reach the weather service: {e}"
+
+    if req.stops:
+        rows, failed, error = conditions_for_stops(req.stops, datetime.now())
+        out["stops"]        = rows
+        out["needs_replan"] = any(r["is_warning"] for r in rows)
+        if failed:
+            out["failed"] = True
+            out["error"]  = error
+    return out
+
 # ── /api/chat  (Groq streaming + tool calling) ────────────────────────────────
 
 def _build_system_prompt() -> str:
@@ -296,20 +358,54 @@ def _build_system_prompt() -> str:
 
 CURRENT DATE AND TIME: {now.strftime('%A, %d %B %Y at %I:%M %p')} (IST)
 
-━━ TIME AWARENESS ━━
-Always compare the requested trip window against the current time above BEFORE
-calling plan_my_day. Three cases:
+━━ HOW YOU GATHER DETAILS — ASK ONE THING AT A TIME ━━
+Collect what you need STEP BY STEP. Ask EXACTLY ONE question per message, then
+STOP and WAIT for the user's reply before the next step. NEVER bundle two
+questions into one message. NEVER call plan_my_day until every step is done.
+Work through the steps in order, skipping any that are already answered.
 
-1. ENTIRE window already past (e.g. user says 9am-6pm but it's now 7pm):
-   Don't call plan_my_day. Tell them the window has passed and ask: are you
-   planning for tomorrow, or a specific date?
+STEP 1 — Timing. Compare the requested window to the current time above:
+  • Whole window is still in the future → say nothing about time; go to STEP 2.
+  • Start has already passed but the end is still ahead (e.g. they said 9am-6pm
+    and it's now {now.strftime('%I:%M %p')}) → ask ONLY this, then STOP and wait:
+      "It's already {now.strftime('%I:%M %p')}. Want me to plan from now until
+       your end time, or schedule this trip for another day?"
+    - If they say continue / from now → use the CURRENT time as trip_start, then
+      go to STEP 2.
+    - If they choose another day → do NOT guess the day. Ask ONLY this, then STOP
+      and wait: "Sure — which day? Tomorrow, the day after, or a specific date?"
+      When they answer, resolve it to a `date` (see DATE RESOLUTION), keep their
+      original start time, then go to STEP 2.
+  • Whole window has already passed → ask ONLY: "That time's already gone for
+    today — which day would you like instead? Tomorrow, the day after, or a
+    specific date?" STOP and wait, then resolve their answer to a `date`.
 
-2. Start is past but end is still ahead (e.g. 9am-6pm requested, now it's 4pm):
-   Call plan_my_day, but use the CURRENT time as trip_start (not 9am), and
-   tell the user explicitly: "Since it's already {now.strftime('%I:%M %p')}, I'll
-   plan from now until your end time." Never silently use a past start time.
+STEP 2 — Meals. First work out which meals are even POSSIBLE for the trip window,
+  and offer ONLY those — never offer a meal that can't fit:
+    - breakfast only if the trip starts at or before ~09:30,
+    - lunch only if the window covers roughly 12:30–14:00,
+    - supper only if the trip runs to ~19:00 or later.
+  (So a trip from noon → don't offer breakfast; a trip ending at 5pm → don't
+  offer supper.) Then ask ONLY this, listing just the possible meals, and STOP
+  and wait:
+   "Before I plan — want me to include any meals ({{possible meals}})? Or none?"
 
-3. Window is entirely in the future: proceed normally without comment.
+STEP 3 — Diet (SKIP this step entirely if they wanted no meals). Ask ONLY this,
+  then STOP and wait:
+   "Great — and are you vegetarian or non-vegetarian?"
+
+STEP 4 — Meal timing (SKIP if they wanted no meals). Ask ONLY this, then STOP
+  and wait:
+   "One more thing — do you need any meal at a specific time (for example, if you
+    take medication with food), or should I just fit them in naturally as we go?"
+  - If they give specific times, pass them in `meal_times` as HH:MM, e.g.
+    {{"lunch": "13:00"}}.
+  - If they say no / it's flexible, omit meal_times.
+
+STEP 5 — Plan. Only now call plan_my_day, passing everything you've gathered:
+  query, trip_start, trip_end, date (if any), meals (array; [] if none), diet,
+  meal_times (only for meals with a fixed time), and food_place if the user named
+  a specific restaurant.
 
 ━━ DATE RESOLUTION ━━
 If the user mentions any specific date, resolve it to YYYY-MM-DD and pass it
@@ -324,20 +420,12 @@ as the `date` parameter. Examples:
 The backend extracts the correct weekday from this date automatically, so you
 don't also need to pass `day` when `date` is provided.
 
-━━ MEALS & DIET (ASK BEFORE PLANNING) ━━
-Before you call plan_my_day, you MUST know two things:
-  1. Which meals to include — breakfast, lunch and/or supper (dinner) — or none.
-  2. If ANY meal is included: is the user vegetarian or non-vegetarian?
-If the user hasn't already told you, ask BOTH in a single short, friendly
-message and WAIT for their answer — do not call plan_my_day yet. Example:
-"Before I plan — want me to work in any meals (breakfast / lunch / supper)?
-And are you vegetarian or non-vegetarian?"
-Once you know, call plan_my_day with `meals` and `diet` set (pass meals=[] if
-they want no food). If the user names a specific restaurant, also pass
-`food_place`. After the plan returns, the per-meal restaurant suggestions appear
-as cards below your message — tell the user to tap "Add" on the one they want
-for each meal (one per meal). Do NOT list the restaurant names yourself; the
-cards already show them with ratings and reviews.
+━━ AFTER THE PLAN — MEAL SUGGESTIONS ━━
+If meals were requested, the per-meal restaurant suggestions appear as cards
+below your message. Tell the user, in one line, that they can tap "Add" on one
+card per meal — or tap "Let Tripy choose" to have a good one picked for them. Do
+NOT list the restaurant names yourself; the cards already show them with ratings
+and reviews.
 
 ━━ CONVERSATION MEMORY ━━
 You have the full conversation history. Never re-ask for something already given.
@@ -372,8 +460,9 @@ PLAN_TOOL = {
                 "trip_end":   {"type": "string",  "description": "End time HH:MM (24h)."},
                 "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
                 "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th', 'tomorrow', or 'day after tomorrow'. The backend resolves the correct weekday from this."},
-                "meals":      {"type": "array", "items": {"type": "string", "enum": ["breakfast", "lunch", "dinner"]}, "description": "Which meals to weave into the day. Empty if the user wants no food stops. ('supper' means dinner.)"},
+                "meals":      {"type": "array", "items": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "supper"]}, "description": "Which meals to weave into the day. Empty if the user wants no food stops. 'supper' is treated as dinner."},
                 "diet":       {"type": "string", "enum": ["veg", "nonveg"], "description": "Dietary preference, used to pick restaurants. Only needed if at least one meal is requested."},
+                "meal_times": {"type": "object", "properties": {"breakfast": {"type": "string"}, "lunch": {"type": "string"}, "dinner": {"type": "string"}}, "description": "ONLY if the user must eat a meal at a specific clock time (e.g. for medication). Map that meal to HH:MM 24h, e.g. {\"lunch\": \"13:00\"}. Omit meals whose timing is flexible."},
                 "food_place": {"type": "string", "description": "A specific restaurant the user explicitly asked to include by name (e.g. 'Villa Maya'). Force-included even if it's a small detour. Omit otherwise."},
             },
             "required": ["query", "trip_start", "trip_end"],
@@ -445,8 +534,9 @@ async def chat(req: ChatRequest):
                 "weekday_index":   _weekday_index(day_name),
                 "trip_start":      args.get("trip_start", "09:00"),
                 "trip_end":        args.get("trip_end",   "18:00"),
-                "requested_meals": args.get("meals") or [],
+                "requested_meals": _norm_meals(args.get("meals")),
                 "diet":            args.get("diet"),
+                "meal_times":      _norm_meal_times(args.get("meal_times")),
                 "specific_food_place": args.get("food_place"),
             }
             plan_result  = orchestrator.invoke(state)

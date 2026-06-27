@@ -50,8 +50,16 @@ class TripState(TypedDict, total=False):
     requested_meals: List[str]
     diet: Optional[str]
     meal_selections: Dict[str, str]
+    meal_times: Dict[str, str]          # meal -> "HH:MM" the user must eat at (e.g. medication)
     specific_food_place: Optional[str]
     meal_suggestions: Dict[str, list]
+
+    # The LOCKED sightseeing route. Computed once and reused so adding/removing a
+    # meal never reshuffles the day. reuse_base tells the planner to skip the
+    # (non-deterministic) OR-Tools re-solve and just re-insert meals.
+    base_stops: List[dict]
+    base_skipped: List[dict]
+    reuse_base: bool
 
     weather_warnings: List[dict]
     needs_replan: bool
