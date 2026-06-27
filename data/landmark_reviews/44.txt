@@ -1,0 +1,17 @@
+ID: 44
+NAME: Kalavara Restaurant
+CATEGORY: Multicuisine Family Restaurant / Rooftop Dining
+
+[RAW_REVIEW_REPOSITORY]
+
+"A reliable family rooftop spot in Feb 2026. Good for a relaxed evening when the group can't agree on one cuisine — there's South Indian, North Indian, Chinese and tandoori all on one menu. Feb 2026"
+
+"SIGNATURE DISHES: Strong on Indo-Chinese and tandoori — the gobi/chicken starters, butter chicken and the grilled platters are the safe picks. They handle large group orders well, so it's a popular choice for family get-togethers. Jan 2026"
+
+"PRICING & VALUE: Mid-range, around Rs 700-900 for two. You're paying a little for the ambience and the variety. 2025"
+
+"AMBIANCE & CROWD: The open-air upper level catches the evening breeze and is the nicest place to sit. It's lively and family-oriented rather than romantic — expect kids and big tables. Service can stretch when it's full. Oct 2025"
+
+"LOGISTICS: Vellayambalam area, central Thiruvananthapuram. Open roughly 8:00 AM to 11:00 PM, so it covers breakfast through late dinner. Parking is manageable. 2024"
+
+"LOCAL TIP: Ask for the rooftop/open-air seating specifically — the indoor section is far less special. Best after sunset when the breeze picks up. 2024"

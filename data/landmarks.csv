@@ -1,41 +1,66 @@
-id,name,lat,lng,category,closed_on,regular_hours,special_hours,gap_hours,vibe_tags,avg_duration
-1,Sree Padmanabhaswamy Temple,8.483026,76.943563,Temple,None,03:30-12:00; 17:00-19:20,None,12:00-17:00,"Spiritual, Strict, Golden, History",1.5
-2,Napier Museum,8.508892,76.955306,Museum,Monday,10:00-16:30,Wed:13:00-16:45,None,"Art, History, Architecture, Quiet",2.0
-3,Thiruvananthapuram Zoo,8.508512,76.954911,Zoo,Monday,09:00-17:15,None,None,"Nature, Family, Wildlife, Shady",2.5
-4,Kuthira Malika,8.482421,76.944215,Museum,Monday,08:30-12:30; 15:30-17:30,None,12:30-15:30,"Royal, Woodwork, History, Intricate",1.0
-5,Attukal Bhagavathy Temple,8.471412,76.953118,Temple,None,04:30-12:30; 17:00-20:30,None,12:30-17:00,"Devotional, Women-centric, Powerful",1.0
-6,Azhimala Shiva Temple,8.375124,77.016512,Temple,None,05:30-11:00; 17:00-20:00,Sun:05:30-20:00,11:00-17:00,"Majestic, Sea-side, Statue, Sunset",1.0
-7,Vizhinjam Lighthouse,8.384812,76.980011,Landmark,Monday,10:00-12:45; 14:00-17:45,None,12:45-14:00,"Viewpoint, Coastal, Photography",1.0
-8,Magic Planet,8.583011,76.865412,Theme Park,Monday,10:00-17:00,None,None,"Family, Fun, Entertainment, Science",3.0
-9,Shangumugham Beach,8.477012,76.911612,Beach,None,00:00-23:59,None,None,"Sunset, Sea-breeze, Relaxed, Giant Statue",1.5
-10,Veli Tourist Village,8.502412,76.890612,Park,None,08:00-18:00,None,None,"Waterfront, Boating, Art, Family",2.0
-11,Lighthouse Beach,8.397011,76.974012,Beach,None,00:00-23:59,None,None,"Iconic, Surfing, Lighthouse, Touristy",3.0
-12,Chalai Bazaar,8.485124,76.950012,Market,Sunday,09:00-20:00,None,None,"Bustling, Shopping, Street-food",2.0
-13,Kanakakunnu Palace,8.511512,76.957512,Heritage,Monday,10:00-17:00,None,None,"Cultural, Green, Royal, Evening-walk",1.5
-14,Priyadarshini Planetarium,8.505012,76.947012,Science,Monday,10:00-17:00,None,None,"Educational, Space, Family, Indoor",1.5
-15,Akkulam Tourist Village,8.520011,76.905011,Park,None,10:00-20:00,None,None,"Boating, Lake-side, Kids, Adventure",2.0
-16,Pazhavangadi Ganapathi,8.484412,76.945512,Temple,None,04:30-10:45; 17:00-20:30,None,10:45-17:00,"Ganesha, Tradition, Coconut-breaking",0.5
-17,Villa Maya,8.486211,76.943011,Restaurant,None,11:00-23:00,None,None,"Fine-dining, Heritage, Romantic, Upscale",2.0
-18,Indian Coffee House,8.488012,76.950511,Cafe,None,08:00-21:30,None,None,"Retro, Iconic, Architecture, Budget-eats",1.0
-19,Poovar Island,8.318012,77.080011,Nature,None,09:00-17:00,None,None,"Backwaters, Mangroves, Floating-restaurant",3.0
-20,Neyyar Dam,8.530012,77.150011,Nature,Monday,09:00-16:00,None,None,"Dam, Crocodile-park, Lion-safari, Picnic",3.0
-21,Ponmudi Hills,8.759712,77.114311,Nature,None,08:00-16:00,None,None,"Mist, Tea-gardens, Trekking, Scenic-drive",4.0
-22,Sri Chitra Art Gallery,8.508912,76.955311,Art,Monday,10:00-16:45,Wed:13:00-16:45,None,"Ravi Varma, Paintings, History, Quiet",1.5
-23,Vizhinjam Rock Cut Cave,8.389011,76.990011,Heritage,Monday,09:00-18:00,None,None,"Ancient, Sculpture, Archaeological",0.5
-24,Zam Zam (Palayam),8.502511,76.950011,Restaurant,None,11:30-23:30,None,None,"Shawarma, Local-favorite, Lively, Halal",1.0
-25,Madavoorpara,8.570011,76.880011,Hidden Gem,None,09:00-18:00,None,None,"Cave-temple, Bamboo-bridge, Viewpoint",1.5
-26,Cafe Sarwaa,8.503011,76.963011,Cafe,None,10:30-21:30,None,None,"Cozy, Gifts, Garden-cafe, Peaceful",1.5
-27,Connemara Market,8.500011,76.950011,Market,Sunday,07:00-19:00,None,None,"Flowers, Local-life, Raw-energy",1.5
-28,Puthenthope Beach,8.540011,76.840011,Hidden Gem,None,00:00-23:59,None,None,"Secluded, Clean, Local, Sunset",1.5
-29,Beemapally Mosque,8.452011,76.931011,Religious,None,04:00-22:00,None,None,"Architecture, Spiritual, Massive, Pink",1.0
-30,Museum of History,8.505511,76.951511,Museum,Monday,10:00-17:30,None,None,"Hi-tech, Interactive, State-history",1.5
-31,Terumo Penpol Viewpoint,8.551011,76.915011,Hidden Gem,None,05:00-19:00,None,None,"Hilltop, Mist, Quiet, Sunrise",1.0
-32,Mankayam Waterfalls,8.740012,77.060011,Nature,Monday,09:00-16:00,None,None,"Forest, Trekking, Water, Adventure",2.5
-33,Eve’s Beach,8.399011,76.971011,Beach,None,00:00-23:59,None,None,"Moonlight, Swimming, Vibrant",2.0
-34,Mothers Veg Plaza,8.502011,76.951011,Restaurant,None,11:30-22:30,None,None,"Sadya, Authentic, Bustling, Lunch-spot",1.0
-35,O by Tamara,8.514011,76.910011,Lounge,None,11:00-23:00,None,None,"Modern, Luxury, Rooftop, View",2.0
-36,Karikkakom Devi Temple,8.496011,76.908011,Temple,None,05:00-11:30; 16:30-20:00,None,11:30-16:30,"Ancient, Peaceful, Nature-surroundings",1.0
-37,Science & Tech Museum,8.505011,76.947011,Museum,Monday,10:00-17:00,None,None,"Kids, Interactive, Educational, Indoor",2.0
-38,Good Morning Tea Shop,8.483011,76.950011,Cafe,None,04:00-10:00,None,None,"Morning-ritual, Local, Tea, Breakfast",0.5
-39,Magic Academy,8.522011,76.904011,Art,None,10:00-18:00,None,None,"Performance, Magic, Art, Unique",2.0
-40,Anchuthengu Fort,8.681112,76.776111,Heritage,None,09:00-17:30,None,None,"Coastal, History, British-era, Scenic",1.0
+id,name,lat,lng,category,closed_on,regular_hours,special_hours,gap_hours,vibe_tags,avg_duration,diet,rating
+1,Sree Padmanabhaswamy Temple,8.483026,76.943563,Temple,None,03:30-12:00; 17:00-19:20,None,12:00-17:00,"Spiritual, Strict, Golden, History",1.5,na,
+2,Napier Museum,8.508892,76.955306,Museum,Monday,10:00-16:30,Wed:13:00-16:45,None,"Art, History, Architecture, Quiet",2.0,na,
+3,Thiruvananthapuram Zoo,8.508512,76.954911,Zoo,Monday,09:00-17:15,None,None,"Nature, Family, Wildlife, Shady",2.5,na,
+4,Kuthira Malika,8.482421,76.944215,Museum,Monday,08:30-12:30; 15:30-17:30,None,12:30-15:30,"Royal, Woodwork, History, Intricate",1.0,na,
+5,Attukal Bhagavathy Temple,8.471412,76.953118,Temple,None,04:30-12:30; 17:00-20:30,None,12:30-17:00,"Devotional, Women-centric, Powerful",1.0,na,
+6,Azhimala Shiva Temple,8.375124,77.016512,Temple,None,05:30-11:00; 17:00-20:00,Sun:05:30-20:00,11:00-17:00,"Majestic, Sea-side, Statue, Sunset",1.0,na,
+7,Vizhinjam Lighthouse,8.384812,76.980011,Landmark,Monday,10:00-12:45; 14:00-17:45,None,12:45-14:00,"Viewpoint, Coastal, Photography",1.0,na,
+8,Magic Planet,8.583011,76.865412,Theme Park,Monday,10:00-17:00,None,None,"Family, Fun, Entertainment, Science",3.0,na,
+9,Shangumugham Beach,8.477012,76.911612,Beach,None,00:00-23:59,None,None,"Sunset, Sea-breeze, Relaxed, Giant Statue",1.5,na,
+10,Veli Tourist Village,8.502412,76.890612,Park,None,08:00-18:00,None,None,"Waterfront, Boating, Art, Family",2.0,na,
+11,Lighthouse Beach,8.397011,76.974012,Beach,None,00:00-23:59,None,None,"Iconic, Surfing, Lighthouse, Touristy",3.0,na,
+12,Chalai Bazaar,8.485124,76.950012,Market,Sunday,09:00-20:00,None,None,"Bustling, Shopping, Street-food",2.0,na,
+13,Kanakakunnu Palace,8.511512,76.957512,Heritage,Monday,10:00-17:00,None,None,"Cultural, Green, Royal, Evening-walk",1.5,na,
+14,Priyadarshini Planetarium,8.505012,76.947012,Science,Monday,10:00-17:00,None,None,"Educational, Space, Family, Indoor",1.5,na,
+15,Akkulam Tourist Village,8.520011,76.905011,Park,None,10:00-20:00,None,None,"Boating, Lake-side, Kids, Adventure",2.0,na,
+16,Pazhavangadi Ganapathi,8.484412,76.945512,Temple,None,04:30-10:45; 17:00-20:30,None,10:45-17:00,"Ganesha, Tradition, Coconut-breaking",0.5,na,
+17,Villa Maya,8.486211,76.943011,Restaurant,None,11:00-23:00,None,None,"Fine-dining, Heritage, Romantic, Upscale",2.0,both,4.6
+18,Indian Coffee House,8.488012,76.950511,Cafe,None,08:00-21:30,None,None,"Retro, Iconic, Architecture, Budget-eats",1.0,both,3.8
+19,Poovar Island,8.318012,77.080011,Nature,None,09:00-17:00,None,None,"Backwaters, Mangroves, Floating-restaurant",3.0,na,
+20,Neyyar Dam,8.530012,77.150011,Nature,Monday,09:00-16:00,None,None,"Dam, Crocodile-park, Lion-safari, Picnic",3.0,na,
+21,Ponmudi Hills,8.759712,77.114311,Nature,None,08:00-16:00,None,None,"Mist, Tea-gardens, Trekking, Scenic-drive",4.0,na,
+22,Sri Chitra Art Gallery,8.508912,76.955311,Art,Monday,10:00-16:45,Wed:13:00-16:45,None,"Ravi Varma, Paintings, History, Quiet",1.5,na,
+23,Vizhinjam Rock Cut Cave,8.389011,76.990011,Heritage,Monday,09:00-18:00,None,None,"Ancient, Sculpture, Archaeological",0.5,na,
+24,Zam Zam (Palayam),8.502511,76.950011,Restaurant,None,11:30-23:30,None,None,"Shawarma, Local-favorite, Lively, Halal",1.0,nonveg,4.3
+25,Madavoorpara,8.570011,76.880011,Hidden Gem,None,09:00-18:00,None,None,"Cave-temple, Bamboo-bridge, Viewpoint",1.5,na,
+26,Cafe Sarwaa,8.503011,76.963011,Cafe,None,10:30-21:30,None,None,"Cozy, Gifts, Garden-cafe, Peaceful",1.5,veg,4.6
+27,Connemara Market,8.500011,76.950011,Market,Sunday,07:00-19:00,None,None,"Flowers, Local-life, Raw-energy",1.5,na,
+28,Puthenthope Beach,8.540011,76.840011,Hidden Gem,None,00:00-23:59,None,None,"Secluded, Clean, Local, Sunset",1.5,na,
+29,Beemapally Mosque,8.452011,76.931011,Religious,None,04:00-22:00,None,None,"Architecture, Spiritual, Massive, Pink",1.0,na,
+30,Museum of History,8.505511,76.951511,Museum,Monday,10:00-17:30,None,None,"Hi-tech, Interactive, State-history",1.5,na,
+31,Terumo Penpol Viewpoint,8.551011,76.915011,Hidden Gem,None,05:00-19:00,None,None,"Hilltop, Mist, Quiet, Sunrise",1.0,na,
+32,Mankayam Waterfalls,8.740012,77.060011,Nature,Monday,09:00-16:00,None,None,"Forest, Trekking, Water, Adventure",2.5,na,
+33,Eve’s Beach,8.399011,76.971011,Beach,None,00:00-23:59,None,None,"Moonlight, Swimming, Vibrant",2.0,na,
+34,Mothers Veg Plaza,8.502011,76.951011,Restaurant,None,11:30-22:30,None,None,"Sadya, Authentic, Bustling, Lunch-spot",1.0,veg,4.2
+35,O by Tamara,8.514011,76.910011,Lounge,None,11:00-23:00,None,None,"Modern, Luxury, Rooftop, View",2.0,both,4.3
+36,Karikkakom Devi Temple,8.496011,76.908011,Temple,None,05:00-11:30; 16:30-20:00,None,11:30-16:30,"Ancient, Peaceful, Nature-surroundings",1.0,na,
+37,Science & Tech Museum,8.505011,76.947011,Museum,Monday,10:00-17:00,None,None,"Kids, Interactive, Educational, Indoor",2.0,na,
+38,Good Morning Tea Shop,8.483011,76.950011,Cafe,None,04:00-10:00,None,None,"Morning-ritual, Local, Tea, Breakfast",0.5,veg,4.0
+39,Magic Academy,8.522011,76.904011,Art,None,10:00-18:00,None,None,"Performance, Magic, Art, Unique",2.0,na,
+40,Anchuthengu Fort,8.681112,76.776111,Heritage,None,09:00-17:30,None,None,"Coastal, History, British-era, Scenic",1.0,na,
+41,Ariya Nivaas,8.486800,76.952400,Restaurant,None,06:30-22:30,None,None,"Vegetarian, South-Indian, Budget, Family",1.0,veg,4.1
+42,Azad Restaurant,8.486000,76.949200,Restaurant,None,11:00-23:30,None,None,"Biryani, Travancore-style, Non-veg, Iconic",1.0,nonveg,3.7
+43,Hotel Rahmaniya,8.508000,76.948800,Restaurant,None,11:00-22:00,None,None,"Chicken-fry, Old-school, Local-favorite, Queue",1.0,nonveg,3.8
+44,Kalavara Restaurant,8.509500,76.959000,Restaurant,None,08:00-23:00,None,None,"Rooftop, Multicuisine, Family, Lively",1.5,both,3.4
+45,The Yellow Chilli,8.516500,76.953500,Restaurant,None,12:00-23:30,None,None,"North-Indian, Sanjeev-Kapoor, Upscale, Tandoor",1.5,both,4.4
+46,Buhari Hotel,8.480000,76.945500,Restaurant,None,11:00-23:30,None,None,"Biryani, Mughlai, Heritage, Casual",1.0,both,3.6
+47,Coconut Grove,8.399500,76.978000,Restaurant,None,12:00-23:00,None,None,"Seafood, Beach-side, Fresh-catch, Tandoori",1.5,nonveg,4.6
+48,Hotel Aryaas Park,8.487500,76.951000,Restaurant,None,07:00-22:30,None,None,"Vegetarian, Thali, Clean, Affordable",1.0,veg,4.0
+49,Hotel Saravana Bhavan,8.512500,76.963500,Restaurant,None,07:00-21:30,None,None,"Vegetarian, Dosa, Hygienic, Reliable",1.0,veg,4.1
+50,Bait Al Mandi,8.566000,76.877000,Restaurant,None,12:00-22:30,None,None,"Mandi, Arabian, Generous-portions, Techie-spot",1.5,nonveg,4.3
+51,The German Bakery,8.398000,76.976500,Cafe,None,08:00-22:00,None,None,"Beach-view, Bakery, Continental, Seafood",1.5,both,4.0
+52,Karim's,8.531800,76.890800,Restaurant,None,11:00-22:45,None,None,"Mughlai, Kebab, Old-Delhi-legacy, Mall",1.5,both,4.1
+53,Halais Dum Biryani,8.498000,76.942000,Restaurant,None,11:00-23:00,None,None,"Kuzhi-mandi, Arabian, Biryani, Grilled",1.0,nonveg,3.7
+54,Oasis Ice Cream Parlour,8.510500,76.961500,Cafe,None,11:00-23:00,None,None,"Ice-cream, Dessert, Puttu-icecream, Sweet-tooth",0.5,veg,4.2
+55,Ma Cafe,8.510000,76.960500,Cafe,None,12:00-23:59,None,None,"Burgers, Hangout, Youthful, Late-night",1.0,both,4.4
+56,Koyikkal Palace,8.601500,76.997500,Heritage,Monday,09:00-17:00,None,None,"Venad-palace, Folklore, Numismatics, Heritage",1.0,na,
+57,CVN Kalari Sangham,8.483800,76.946000,Art,None,06:00-08:30; 17:00-19:00,None,08:30-17:00,"Kalaripayattu, Martial-arts, Cultural, Ancient",0.5,na,
+58,Vellayani Lake,8.418000,76.993000,Nature,None,05:30-18:30,None,None,"Freshwater-lake, Boating, Sunset, Lotus",1.5,na,
+59,Aruvikkara Dam,8.584000,76.992000,Nature,None,08:00-18:00,None,None,"Dam, River, Fish-feeding, Picnic",1.5,na,
+60,Valiyathura Pier,8.472000,76.932000,Hidden Gem,None,06:00-19:00,None,None,"Sea-bridge, Sunset, Fishermen, Historic",1.0,na,
+61,Thiruvallam Parasurama Temple,8.453000,76.943000,Temple,None,04:00-11:00; 17:00-20:20,None,11:00-17:00,"Backwaters, Canoeing, Parasurama, Riverside",1.0,na,
+62,Peppara Wildlife Sanctuary,8.630000,77.150000,Nature,None,09:00-17:00,None,None,"Wildlife, Forest, Reservoir, Birding",3.0,na,
+63,Kallar Meenmutty Falls,8.720000,77.090000,Nature,None,09:00-17:00,None,None,"Waterfall, Trek, Rock-pools, Forest",2.5,na,
+64,Varkala Papanasam Beach,8.733000,76.701500,Beach,None,06:00-20:00,None,None,"Cliff, Sunset, Sacred, Cafes",3.0,na,
+65,Kowdiar Palace,8.515500,76.956000,Heritage,None,10:00-16:00,None,None,"Royal-residence, Architecture, Landmark, Gate-view",0.5,na,

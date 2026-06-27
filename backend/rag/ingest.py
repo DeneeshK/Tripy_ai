@@ -93,6 +93,10 @@ def run_ingest(use_stub: bool = False):
             "special_hours": str(row["special_hours"]) if pd.notna(row.get("special_hours"))   else "None",
             "vibe_tags":     str(row["vibe_tags"]),
             "avg_duration":  float(row["avg_duration"]) if pd.notna(row["avg_duration"])       else 1.0,
+            # Food-only fields (na / 0.0 for non-food rows) -- power diet filtering
+            # and the per-meal restaurant suggestion cards.
+            "diet":          str(row["diet"])           if pd.notna(row.get("diet"))           else "na",
+            "rating":        float(row["rating"])       if pd.notna(row.get("rating"))         else 0.0,
         }
 
         collection.add(

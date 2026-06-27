@@ -1,0 +1,17 @@
+ID: 55
+NAME: Ma Cafe
+CATEGORY: Cafe / Casual Fast Food & Hangout
+
+[RAW_REVIEW_REPOSITORY]
+
+"A buzzy young-crowd hangout in Feb 2026. Ma Cafe on the Vellayambalam–Sasthamangalam road has become a default evening spot for friends — cozy, casual and open very late. Rated about 4.4 across 680+ reviews. Feb 2026"
+
+"SIGNATURE DISHES: Burgers are the headline — the combos with crispy fries are the must-order, and there's a fun local twist like the 'Arattu Burger'. Add sandwiches, wraps, fresh-fruit mojitos and thick milkshakes. It's comfort fast-food done well, not fine dining. Jan 2026"
+
+"PRICING & VALUE: Easy on the budget — around Rs 400-600 for two. Good value for the portion sizes and the late hours. 2025"
+
+"AMBIANCE & CROWD: Cozy, youthful and social, with friendly staff. Liveliest at night when the dinner-and-dessert crowd rolls in. Great for a relaxed catch-up rather than a formal meal. Oct 2025"
+
+"LOGISTICS: Vellayambalam–Sasthamangalam Road, Trivandrum. Open roughly 12:00 noon to 12:00 midnight daily — one of the better genuinely-late options in the city. 2024"
+
+"LOCAL TIP: This is the late-night fallback when most kitchens have shut — burgers, shakes and mojitos past 10 PM. Go for a combo; ordering items separately costs more for the same food. 2024"

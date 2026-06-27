@@ -5,19 +5,21 @@ import { Send, Loader2, MapPin, Clock, XCircle } from 'lucide-react'
 const API = ''  // vite proxy handles /api -> localhost:8000
 
 function StopCard({ stop, index }) {
+  const meal = stop.is_meal
+  const accent = meal ? '#b45309' : '#2563eb'
   return (
     <div style={{
-      background: '#fff', border: '1.5px solid #dbeafe',
+      background: meal ? '#fffbeb' : '#fff', border: `1.5px solid ${meal ? '#fde68a' : '#dbeafe'}`,
       borderRadius: '10px', padding: '10px 14px', marginBottom: '10px',
       boxShadow: '0 1px 3px rgba(37,99,235,0.08)',
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
         <span style={{
-          background: '#2563eb', color: '#fff', borderRadius: '50%',
+          background: accent, color: '#fff', borderRadius: '50%',
           width: '20px', height: '20px', display: 'inline-flex', alignItems: 'center',
           justifyContent: 'center', fontSize: '11px', fontWeight: 700, flexShrink: 0,
-        }}>{index + 1}</span>
-        <strong style={{ fontSize: '15px', color: '#2563eb', fontWeight: 700 }}>{stop.name}</strong>
+        }}>{meal ? '🍽' : index + 1}</span>
+        <strong style={{ fontSize: '15px', color: accent, fontWeight: 700 }}>{stop.name}</strong>
       </div>
       <div style={{ fontSize: '12px', color: '#6b7280', margin: '4px 0 0 28px' }}>
         {stop.visit_starts} – {stop.visit_ends}
@@ -48,6 +50,129 @@ function SkippedCard({ place }) {
   )
 }
 
+const PLAN_TRAILER = '<<<TRIPY_PLAN>>>'  // must match api/main.py PLAN_TRAILER
+const MEAL_TITLES = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Supper' }
+const MEAL_ORDER  = ['breakfast', 'lunch', 'dinner']
+
+// Seed the user's current per-meal selection from the backend's `added` flags.
+function seedSelections(suggestions = {}) {
+  const sel = {}
+  for (const meal of MEAL_ORDER) {
+    const chosen = (suggestions[meal] || []).find(c => c.added)
+    if (chosen) sel[meal] = chosen.id
+  }
+  return sel
+}
+
+const DIET_STYLE = {
+  veg:    { bg: '#dcfce7', fg: '#166534', label: 'Pure veg' },
+  nonveg: { bg: '#fee2e2', fg: '#991b1b', label: 'Non-veg' },
+  both:   { bg: '#fef3c7', fg: '#92400e', label: 'Veg & Non-veg' },
+}
+
+// The stored insight is the full review file; strip the ID/NAME/CATEGORY header
+// and the [RAW_REVIEW_REPOSITORY] marker so only the real review quotes show.
+function cleanInsight(text = '') {
+  const marker = '[RAW_REVIEW_REPOSITORY]'
+  const idx = text.indexOf(marker)
+  return (idx !== -1 ? text.slice(idx + marker.length) : text).trim()
+}
+
+function Stars({ rating }) {
+  if (!rating) return null
+  return (
+    <span style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 700 }}>
+      ★ {Number(rating).toFixed(1)}
+    </span>
+  )
+}
+
+function MealCard({ card, selected, onAdd, busy }) {
+  const [showReview, setShowReview] = useState(false)
+  const ds = DIET_STYLE[card.diet] || DIET_STYLE.both
+  return (
+    <div style={{
+      background: '#fff', border: `1.5px solid ${selected ? '#16a34a' : '#e5e7eb'}`,
+      borderRadius: '10px', padding: '10px 12px', marginBottom: '8px',
+      boxShadow: selected ? '0 0 0 2px #16a34a22' : '0 1px 2px rgba(0,0,0,0.04)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <strong style={{ fontSize: '14px', color: '#111', flex: 1 }}>{card.name}</strong>
+        <Stars rating={card.rating} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '5px 0' }}>
+        <span style={{
+          background: ds.bg, color: ds.fg, fontSize: '10.5px', fontWeight: 700,
+          padding: '2px 7px', borderRadius: '20px',
+        }}>{card.diet_label || ds.label}</span>
+        {card.detour_min != null && (
+          <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+            ~{Math.round(card.detour_min)} min off your route
+          </span>
+        )}
+      </div>
+      {card.diet === 'both' && card.diet_note && (
+        <div style={{ fontSize: '11.5px', color: '#92400e', marginBottom: '4px' }}>{card.diet_note}</div>
+      )}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <button
+          onClick={() => setShowReview(v => !v)}
+          style={{
+            background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer',
+            fontSize: '12px', padding: 0, fontWeight: 600,
+          }}>
+          {showReview ? 'Hide reviews' : 'View reviews'}
+        </button>
+        <button
+          onClick={onAdd} disabled={busy}
+          style={{
+            marginLeft: 'auto',
+            background: selected ? '#16a34a' : '#2563eb', color: '#fff', border: 'none',
+            borderRadius: '8px', padding: '6px 12px', cursor: busy ? 'default' : 'pointer',
+            fontSize: '12.5px', fontWeight: 700, opacity: busy ? 0.6 : 1,
+          }}>
+          {selected ? '✓ Added' : '+ Add to plan'}
+        </button>
+      </div>
+      {showReview && (
+        <div style={{
+          marginTop: '8px', fontSize: '12px', color: '#4b5563', lineHeight: '1.45',
+          maxHeight: '160px', overflowY: 'auto', whiteSpace: 'pre-line',
+          background: '#f9fafb', borderRadius: '8px', padding: '8px 10px',
+        }}>
+          {cleanInsight(card.insight) || 'No review text available.'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MealSuggestions({ suggestions, selections, onAdd, busy }) {
+  const meals = MEAL_ORDER.filter(m => suggestions?.[m]?.length)
+  if (!meals.length) return null
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%' }}>
+      {meals.map(meal => (
+        <div key={meal} style={{ marginBottom: '8px' }}>
+          <div style={{
+            fontSize: '11px', fontWeight: 700, color: '#b45309',
+            textTransform: 'uppercase', letterSpacing: '0.04em', margin: '6px 0 6px 4px',
+          }}>
+            🍽 {MEAL_TITLES[meal]} — pick one
+          </div>
+          {suggestions[meal].map(card => (
+            <MealCard
+              key={card.id} card={card} busy={busy}
+              selected={selections?.[meal] === card.id}
+              onAdd={() => onAdd(meal, card.id)}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const markdownComponents = {
   p: ({ children }) => <p style={{ margin: '0 0 6px 0' }}>{children}</p>,
   ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '18px' }}>{children}</ul>,
@@ -63,6 +188,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
   }])
   const [input, setInput]   = useState('')
   const [loading, setLoading] = useState(false)
+  const [mealBusy, setMealBusy] = useState(false)
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -109,45 +235,43 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
       }
 
       if (contentType.includes('text/plain')) {
-        // Streaming narrative from Groq
+        // Streaming narrative from Groq, with a structured-plan JSON trailer
+        // appended after PLAN_TRAILER. We show only the narrative while streaming
+        // and parse the trailer once the stream ends.
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
-        let text = ''
+        let raw = ''
         setMessages(prev => [...prev, { role: 'assistant', content: '' }])
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          text += decoder.decode(value, { stream: true })
-          updateLastAssistant({ content: text })
+          raw += decoder.decode(value, { stream: true })
+          const cut = raw.indexOf(PLAN_TRAILER)
+          updateLastAssistant({ content: cut === -1 ? raw : raw.slice(0, cut) })
         }
 
-        if (!text.trim()) {
-          updateLastAssistant({ content: "⚠️ I didn't get a response back — try sending that again." })
+        const cut = raw.indexOf(PLAN_TRAILER)
+        const narrative = (cut === -1 ? raw : raw.slice(0, cut)).trim()
+        let plan = null
+        if (cut !== -1) {
+          try { plan = JSON.parse(raw.slice(cut + PLAN_TRAILER.length)) } catch { /* ignore */ }
         }
+
+        const patch = { content: narrative || "⚠️ I didn't get a response back — try sending that again." }
+        if (plan) {
+          patch.stops           = plan.stops || []
+          patch.skipped         = plan.skipped || []
+          patch.mealSuggestions = plan.meal_suggestions || {}
+          patch.mealSelections  = seedSelections(plan.meal_suggestions)
+          patch.tripId          = plan.trip_id
+        }
+        updateLastAssistant(patch)
+        if (plan && plan.stops?.length) onPlanReady(plan)
       } else {
+        // Non-streaming JSON: the bot asked a clarifying question (no plan yet).
         const data = await res.json()
         setMessages(prev => [...prev, { role: 'assistant', content: data.reply || '(no reply)' }])
-      }
-
-      // After chat, also fetch the structured plan for the map + skipped-place cards
-      if (userLocation) {
-        const planRes = await fetch(`${API}/api/plan`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({
-            query: userMsg.content,
-            lat:   userLocation[0],
-            lng:   userLocation[1],
-            trip_start: extractTime(userMsg.content, 'start') || '09:00',
-            trip_end:   extractTime(userMsg.content, 'end')   || '18:00',
-          }),
-        })
-        if (planRes.ok) {
-          const plan = await planRes.json()
-          if (plan.stops?.length) onPlanReady(plan)  // plan now includes trip_id
-          updateLastAssistant({ stops: plan.stops || [], skipped: plan.skipped || [] })
-        }
       }
     } catch (err) {
       setMessages(prev => [...prev, {
@@ -159,27 +283,38 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     }
   }
 
-  // Very simple time extractor -- the LLM does the real parsing via tool calling.
-  // This separate regex-based pass only feeds the /api/plan call used for the
-  // map + skipped-place cards, so it can occasionally disagree with what the
-  // chat reply itself describes if the wording is unusual -- worth knowing if
-  // the map ever looks slightly off from the narration.
-  function extractTime(text, which) {
-    const patterns = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/gi) || []
-    if (which === 'start' && patterns[0]) return normaliseTime(patterns[0])
-    if (which === 'end'   && patterns[1]) return normaliseTime(patterns[1])
-    return null
+  function updateMessageAt(index, patch) {
+    setMessages(prev => {
+      const next = [...prev]
+      if (next[index]) next[index] = { ...next[index], ...patch }
+      return next
+    })
   }
 
-  function normaliseTime(t) {
-    const m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
-    if (!m) return null
-    let h = parseInt(m[1])
-    const min = m[2] ? m[2] : '00'
-    const mer = (m[3] || '').toLowerCase()
-    if (mer === 'pm' && h < 12) h += 12
-    if (mer === 'am' && h === 12) h = 0
-    return `${String(h).padStart(2, '0')}:${min}`
+  // "Add" on a meal card -> re-plan with that restaurant anchored. One per meal.
+  async function addMeal(msgIndex, tripId, meal, placeId) {
+    if (!tripId || mealBusy) return
+    const current = messages[msgIndex]?.mealSelections || {}
+    const selections = { ...current, [meal]: placeId }
+    setMealBusy(true)
+    try {
+      const res = await fetch(`${API}/api/trip/${tripId}/meals`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ selections }),
+      })
+      if (res.ok) {
+        const plan = await res.json()
+        updateMessageAt(msgIndex, {
+          stops:           plan.stops || [],
+          skipped:         plan.skipped || [],
+          mealSuggestions: plan.meal_suggestions || {},
+          mealSelections:  selections,
+        })
+        if (plan.stops?.length) onPlanReady(plan)
+      }
+    } catch { /* leave the previous plan in place on failure */ }
+    finally { setMealBusy(false) }
   }
 
   const styles = {
@@ -254,6 +389,14 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
                 <div style={styles.stopsLabel}>Your itinerary, with reasons</div>
                 {m.stops.map((s, idx) => <StopCard key={s.name} stop={s} index={idx} />)}
               </div>
+            )}
+            {m.mealSuggestions && (
+              <MealSuggestions
+                suggestions={m.mealSuggestions}
+                selections={m.mealSelections}
+                busy={mealBusy}
+                onAdd={(meal, placeId) => addMeal(i, m.tripId, meal, placeId)}
+              />
             )}
             {m.skipped?.length > 0 && (
               <div style={styles.skippedWrap}>

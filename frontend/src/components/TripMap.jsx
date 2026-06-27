@@ -36,17 +36,21 @@ function buildLayers(stadiaKey, owmKey) {
   }
 }
 
-// ─── Location pin marker (real teardrop pin shape, red) ───────────────────────
-function pinIcon(n) {
-  // SVG teardrop pin: circle on top, tapers to a point at the bottom.
-  // Number sits in the white inner circle.
+// ─── Location pin marker (real teardrop pin shape) ───────────────────────────
+// Sightseeing stops: red pin with the stop number. Meal stops: amber pin with
+// a fork glyph, so food is visually distinct from sightseeing on the map.
+function pinIcon(n, meal = false) {
+  const fill   = meal ? '#d97706' : '#dc2626'
+  const inner  = meal
+    ? `<text x="18" y="22.5" text-anchor="middle" font-size="11">🍴</text>`
+    : `<text x="18" y="22" text-anchor="middle" font-size="10" font-weight="800"
+         font-family="system-ui,-apple-system,sans-serif" fill="#dc2626">${n}</text>`
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 48" width="36" height="48">
       <path d="M18 0 C8.06 0 0 8.06 0 18 C0 31.5 18 48 18 48 C18 48 36 31.5 36 18 C36 8.06 27.94 0 18 0Z"
-        fill="#dc2626" filter="drop-shadow(0 2px 4px rgba(0,0,0,0.45))"/>
+        fill="${fill}" filter="drop-shadow(0 2px 4px rgba(0,0,0,0.45))"/>
       <circle cx="18" cy="18" r="9" fill="rgba(255,255,255,0.95)"/>
-      <text x="18" y="22" text-anchor="middle" font-size="10" font-weight="800"
-        font-family="system-ui,-apple-system,sans-serif" fill="#dc2626">${n}</text>
+      ${inner}
     </svg>`
   return L.divIcon({
     className: '',
@@ -240,7 +244,7 @@ export default function TripMap({ userLocation, stops, route, stadiaApiKey = '',
       )}
 
       {stops.map((s, i) => (
-        <Marker key={`${s.name}-${i}`} position={[s.lat, s.lng]} icon={pinIcon(i + 1)}>
+        <Marker key={`${s.name}-${i}`} position={[s.lat, s.lng]} icon={pinIcon(i + 1, s.is_meal)}>
           <Popup><StopPopup stop={s} /></Popup>
         </Marker>
       ))}

@@ -1,0 +1,17 @@
+ID: 45
+NAME: The Yellow Chilli
+CATEGORY: North Indian Restaurant / Celebrity-Chef Brand
+
+[RAW_REVIEW_REPOSITORY]
+
+"A polished North Indian dinner option in Feb 2026. This is the Trivandrum outlet of Sanjeev Kapoor's Yellow Chilli chain, up near Nanthancode/Kowdiar. Properly air-conditioned, smart, and a notch above the average curry house. Feb 2026"
+
+"SIGNATURE DISHES: The murg dishes get the most love — the murgh hara pyaaz is a recurring favourite — along with the dal makhani, paneer and the tandoori platters with butter naan. The gravies are rich and consistent. Jan 2026"
+
+"PRICING & VALUE: Upscale-casual — around Rs 1200-1600 for two. Pricier than a local biryani place, but you're paying for the chef-brand standardisation and the AC comfort. 2025"
+
+"AMBIANCE & CROWD: Calm, family-friendly and well-suited to a sit-down dinner or a date. Rated about 4.4 across 2200+ reviews, which is high for the area. Less chaotic than the old-city eateries. Oct 2025"
+
+"LOGISTICS: Pipeline Road, Nanthancode, near Kowdiar. Open roughly 12:00 noon to 11:30 PM. Parking is easier here than in the Fort/Overbridge zone. 2024"
+
+"LOCAL TIP: It's a North Indian specialist — don't come expecting Kerala food. Go for the tandoor and the rich curries with naan, and leave the biryani for Azad. 2024"

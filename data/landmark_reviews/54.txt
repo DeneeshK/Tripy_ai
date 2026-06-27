@@ -1,0 +1,17 @@
+ID: 54
+NAME: Oasis Ice Cream Parlour
+CATEGORY: Ice Cream Parlour / Dessert
+
+[RAW_REVIEW_REPOSITORY]
+
+"The city's favourite ice-cream stop in Feb 2026. A Trivandrum institution near Indira Bhavan, Sasthamangalam — exactly where you head to round off a meal or cool down on a warm evening. Feb 2026"
+
+"SIGNATURE DISHES: Famous for the 'Puttu ice cream' — a playful local invention layered like puttu and loaded with fresh fruit and dry fruits; the Indigo Puttu is the most-loved version. Beyond that, a huge spread of sundaes, shakes, juices and mocktails. Jan 2026"
+
+"PRICING & VALUE: Light on the wallet — roughly Rs 100-200 per person. Easy add-on after dinner. 2025"
+
+"AMBIANCE & CROWD: Casual, family-friendly, busiest in the evenings and after dinner hours. Two-wheeler parking right in front. It's a grab-a-dessert spot, not a sit-for-hours cafe. Oct 2025"
+
+"LOGISTICS: Sasthamangalam, very near Indira Bhavan, Trivandrum. Open roughly 11:00 AM to 11:00 PM. Also available on Swiggy and other delivery apps. 2024"
+
+"LOCAL TIP: Don't leave without trying the Puttu ice cream at least once — it's the signature and you won't find it done the same way elsewhere. Perfect as the last stop after a Vellayambalam/Sasthamangalam dinner. 2024"

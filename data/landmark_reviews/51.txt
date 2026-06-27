@@ -1,0 +1,17 @@
+ID: 51
+NAME: The German Bakery
+CATEGORY: Beach Cafe / Bakery & Continental
+
+[RAW_REVIEW_REPOSITORY]
+
+"The classic Kovalam beach hangout in Feb 2026. Perched by Lighthouse Beach, it's the spot for a slow coffee, a fresh bake and a sea view that genuinely leaves you speechless. A backpacker institution for years. Feb 2026"
+
+"SIGNATURE DISHES: Fresh-baked breads, cakes and desserts in the morning; a broad continental-and-more menu later — Thai curries, German sausages, wood-ish pizzas and fresh seafood at dinner. The bakes are the signature, so come early before they sell out. Jan 2026"
+
+"PRICING & VALUE: Around Rs 550 for two, more if you go heavy on seafood. Reasonable for a sea-view tourist cafe. 2025"
+
+"AMBIANCE & CROWD: Unhurried, scenic, traveller-heavy. The view is the headline. Service can be slow when it's full — this is a 'settle in and watch the waves' place, not a quick bite. Oct 2025"
+
+"LOGISTICS: On/above Lighthouse Beach, Kovalam, ~16 km south of the city. Open roughly 8:00 AM to 10:00 PM. Visit in the morning for the full bakery selection — the limited stock runs out by evening. 2024"
+
+"LOCAL TIP: Morning for the bakes, evening for the view and seafood. Don't show up starving expecting fast food — order, then enjoy the beach while you wait. 2024"

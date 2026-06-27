@@ -40,6 +40,11 @@ OWM_API_KEY    = os.getenv("OWM_API_KEY", "")    # openweathermap.org free tier 
 STADIA_API_KEY = os.getenv("STADIA_API_KEY", "")  # optional; localhost works without it
 OSRM_BASE      = "https://router.project-osrm.org"
 
+# Delimiter the /api/chat stream uses to append the structured plan JSON after
+# the narrative. The frontend splits on this, renders the text, and uses the
+# JSON for the map + stop/skip/meal cards.
+PLAN_TRAILER = "<<<TRIPY_PLAN>>>"
+
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -60,7 +65,14 @@ class PlanRequest(BaseModel):
     lng:        float
     trip_start: str
     trip_end:   str
-    day:        Optional[str] = None
+    day:        Optional[str]       = None
+    meals:      Optional[list[str]] = None
+    diet:       Optional[str]       = None
+    food_place: Optional[str]       = None
+
+class TripMealsRequest(BaseModel):
+    # meal -> chosen restaurant id, e.g. {"lunch": "41", "dinner": "17"}
+    selections: dict = {}
 
 class ChatMessage(BaseModel):
     role:    str
@@ -127,14 +139,17 @@ def config():
 def plan(req: PlanRequest):
     day_name = _resolve_day_name(req.day)
     state: TripState = {
-        "mode":          "plan",
-        "query":         req.query,
-        "home_lat":      req.lat,
-        "home_lng":      req.lng,
-        "day":           day_name,
-        "weekday_index": _weekday_index(day_name),
-        "trip_start":    req.trip_start,
-        "trip_end":      req.trip_end,
+        "mode":            "plan",
+        "query":           req.query,
+        "home_lat":        req.lat,
+        "home_lng":        req.lng,
+        "day":             day_name,
+        "weekday_index":   _weekday_index(day_name),
+        "trip_start":      req.trip_start,
+        "trip_end":        req.trip_end,
+        "requested_meals": req.meals or [],
+        "diet":            req.diet,
+        "specific_food_place": req.food_place,
     }
     result   = orchestrator.invoke(state)
     trip_id  = trip_store.create(result)
@@ -145,6 +160,37 @@ def plan(req: PlanRequest):
         "stops":                 stops,
         "skipped":               result["skipped"],
         "coords":                coords,
+        "meal_suggestions":      result.get("meal_suggestions", {}),
+        "used_distance_fallback": result["used_distance_fallback"],
+    }
+
+# ── /api/trip/{id}/meals ─────────────────────────────────────────────────────
+
+@app.post("/api/trip/{trip_id}/meals")
+def trip_meals(trip_id: str, req: TripMealsRequest):
+    """User tapped 'Add' on a meal suggestion. Re-plans with the chosen
+    restaurant(s) anchored at their meal slot; the rest of the day re-optimises
+    around them. One restaurant per meal (the dict key)."""
+    state = trip_store.get(trip_id)
+    if state is None:
+        raise HTTPException(404, f"No trip found with id {trip_id}")
+
+    selections = {m: pid for m, pid in (req.selections or {}).items() if pid}
+    state["mode"]            = "plan"
+    state["meal_selections"] = selections
+    state["requested_meals"] = sorted(
+        set(state.get("requested_meals") or []) | set(selections.keys())
+    )
+
+    result = orchestrator.invoke(state)
+    trip_store.save(trip_id, result)
+    coords = [[state["home_lat"], state["home_lng"]]] + [[s["lat"], s["lng"]] for s in result["stops"]]
+    return {
+        "trip_id":               trip_id,
+        "stops":                 result["stops"],
+        "skipped":               result["skipped"],
+        "coords":                coords,
+        "meal_suggestions":      result.get("meal_suggestions", {}),
         "used_distance_fallback": result["used_distance_fallback"],
     }
 
@@ -274,8 +320,24 @@ as the `date` parameter. Examples:
 - "next Friday" → compute from today ({now.strftime('%A %d %B')})
 - "today" → {now.strftime('%Y-%m-%d')}
 - "tomorrow" → {(datetime.now() + __import__('datetime').timedelta(days=1)).strftime('%Y-%m-%d')}
+- "day after tomorrow" → {(datetime.now() + __import__('datetime').timedelta(days=2)).strftime('%Y-%m-%d')}
 The backend extracts the correct weekday from this date automatically, so you
 don't also need to pass `day` when `date` is provided.
+
+━━ MEALS & DIET (ASK BEFORE PLANNING) ━━
+Before you call plan_my_day, you MUST know two things:
+  1. Which meals to include — breakfast, lunch and/or supper (dinner) — or none.
+  2. If ANY meal is included: is the user vegetarian or non-vegetarian?
+If the user hasn't already told you, ask BOTH in a single short, friendly
+message and WAIT for their answer — do not call plan_my_day yet. Example:
+"Before I plan — want me to work in any meals (breakfast / lunch / supper)?
+And are you vegetarian or non-vegetarian?"
+Once you know, call plan_my_day with `meals` and `diet` set (pass meals=[] if
+they want no food). If the user names a specific restaurant, also pass
+`food_place`. After the plan returns, the per-meal restaurant suggestions appear
+as cards below your message — tell the user to tap "Add" on the one they want
+for each meal (one per meal). Do NOT list the restaurant names yourself; the
+cards already show them with ratings and reviews.
 
 ━━ CONVERSATION MEMORY ━━
 You have the full conversation history. Never re-ask for something already given.
@@ -309,7 +371,10 @@ PLAN_TOOL = {
                 "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). Use current time if the user's requested start has already passed."},
                 "trip_end":   {"type": "string",  "description": "End time HH:MM (24h)."},
                 "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
-                "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th'. The backend resolves the correct weekday from this."},
+                "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th', 'tomorrow', or 'day after tomorrow'. The backend resolves the correct weekday from this."},
+                "meals":      {"type": "array", "items": {"type": "string", "enum": ["breakfast", "lunch", "dinner"]}, "description": "Which meals to weave into the day. Empty if the user wants no food stops. ('supper' means dinner.)"},
+                "diet":       {"type": "string", "enum": ["veg", "nonveg"], "description": "Dietary preference, used to pick restaurants. Only needed if at least one meal is requested."},
+                "food_place": {"type": "string", "description": "A specific restaurant the user explicitly asked to include by name (e.g. 'Villa Maya'). Force-included even if it's a small detour. Omit otherwise."},
             },
             "required": ["query", "trip_start", "trip_end"],
         },
@@ -351,6 +416,8 @@ async def chat(req: ChatRequest):
         ]
     messages.append(assistant_msg)
 
+    structured_plan = None  # last successful plan -> streamed to the UI as a trailer
+
     for tc in tool_calls:
         try:
             args = json.loads(tc.function.arguments)
@@ -370,21 +437,34 @@ async def chat(req: ChatRequest):
                 day_name = _resolve_day_name(args.get("day"))
 
             state: TripState = {
-                "mode":          "plan",
-                "query":         args["query"],
-                "home_lat":      req.lat,
-                "home_lng":      req.lng,
-                "day":           day_name,
-                "weekday_index": _weekday_index(day_name),
-                "trip_start":    args.get("trip_start", "09:00"),
-                "trip_end":      args.get("trip_end",   "18:00"),
+                "mode":            "plan",
+                "query":           args["query"],
+                "home_lat":        req.lat,
+                "home_lng":        req.lng,
+                "day":             day_name,
+                "weekday_index":   _weekday_index(day_name),
+                "trip_start":      args.get("trip_start", "09:00"),
+                "trip_end":        args.get("trip_end",   "18:00"),
+                "requested_meals": args.get("meals") or [],
+                "diet":            args.get("diet"),
+                "specific_food_place": args.get("food_place"),
             }
             plan_result  = orchestrator.invoke(state)
             trip_id      = trip_store.create(plan_result)
+            coords       = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in plan_result["stops"]]
+            structured_plan = {
+                "trip_id":               trip_id,
+                "stops":                 plan_result["stops"],
+                "skipped":               plan_result["skipped"],
+                "coords":                coords,
+                "meal_suggestions":      plan_result.get("meal_suggestions", {}),
+                "used_distance_fallback": plan_result["used_distance_fallback"],
+            }
             tool_content = json.dumps({
                 "trip_id":               trip_id,
                 "stops":                 plan_result["stops"],
                 "skipped":               plan_result["skipped"],
+                "meal_suggestions":      plan_result.get("meal_suggestions", {}),
                 "used_distance_fallback": plan_result["used_distance_fallback"],
             })
         except Exception as e:
@@ -408,6 +488,10 @@ async def chat(req: ChatRequest):
                     yield token
         except Exception as e:
             yield f"\n\n⚠️ Something went wrong: {e}"
+        # Trailer: the real structured plan, so the map + cards reflect exactly
+        # what was planned (no separate, dumber /api/plan call needed).
+        if structured_plan is not None:
+            yield "\n" + PLAN_TRAILER + json.dumps(structured_plan)
 
     if tool_calls:
         return StreamingResponse(stream_gen(), media_type="text/plain")

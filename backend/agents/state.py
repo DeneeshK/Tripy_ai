@@ -43,6 +43,16 @@ class TripState(TypedDict, total=False):
     current_lng: Optional[float]
     simulated_now: Optional[str]  # "HH:MM" override, for testing without waiting on a real clock
 
+    # Meal-aware planning. requested_meals e.g. ["breakfast","lunch"]; diet "veg"|"nonveg";
+    # meal_selections maps a meal -> chosen restaurant id; meal_suggestions is the per-meal
+    # list of suggestion cards the UI renders. specific_food_place = a restaurant the user
+    # named explicitly (force-included). Declared here so LangGraph keeps them between nodes.
+    requested_meals: List[str]
+    diet: Optional[str]
+    meal_selections: Dict[str, str]
+    specific_food_place: Optional[str]
+    meal_suggestions: Dict[str, list]
+
     weather_warnings: List[dict]
     needs_replan: bool
     weather_check_failed: bool

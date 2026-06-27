@@ -25,6 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine.distance_matrix import time_matrix_with_fallback
 from engine.itinerary_engine import Place, plan_itinerary as ortools_plan
 from engine.hours import resolve_for_day, best_window_in_span
+from engine.meals import (
+    MEAL_LABELS, MEAL_DURATION_CAP_MIN, N_SUGGESTIONS, FOOD_CATEGORIES,
+    diet_eligible, meal_slot_in_trip, meal_window_for_place,
+    rank_by_route_proximity, suggestion_card,
+)
 
 VDB_PATH   = Path(__file__).resolve().parent.parent / "trivandrum_vdb"
 COLLECTION = "landmark_repository"
@@ -194,10 +199,95 @@ def smart_search(
             "special_hours":    meta.get("special_hours", "None"),
             "closed_on":        meta.get("closed_on", "None"),
             "avg_duration":     meta.get("avg_duration", 1.0),
+            "diet":             meta.get("diet", "na"),
+            "rating":           meta.get("rating", 0.0),
             "trip_window":      f"{day_name} {current_time}–{end_time}",
         })
 
     return recommendations
+
+
+# ---------------------------------------------------------------------------
+# Food places + per-meal suggestions
+# ---------------------------------------------------------------------------
+
+def get_food_places(exclude_ids: set = None) -> List[Dict]:
+    """Every restaurant/cafe/lounge in the store, with diet + rating + the real
+    review insight. Only ~22 rows, so we fetch all and filter in Python rather
+    than relying on a metadata `where` query (keeps it Chroma-version agnostic)."""
+    exclude_ids = exclude_ids or set()
+    collection = _get_collection()
+    res = collection.get(include=["metadatas", "documents"])
+    out = []
+    for i, pid in enumerate(res["ids"]):
+        if pid in exclude_ids:
+            continue
+        meta = res["metadatas"][i]
+        if meta.get("category") not in FOOD_CATEGORIES:
+            continue
+        doc = res["documents"][i] if res.get("documents") else ""
+        insight = doc.split("Insight: ", 1)[-1].strip() if "Insight: " in doc else ""
+        out.append({
+            "id": pid, "name": meta["name"], "lat": meta["lat"], "lng": meta["lng"],
+            "category": meta.get("category", ""), "diet": meta.get("diet", "na"),
+            "rating": meta.get("rating", 0.0), "vibe": meta.get("vibe_tags", ""),
+            "insight": insight, "regular_hours": meta.get("regular_hours", "Unknown"),
+            "special_hours": meta.get("special_hours", "None"),
+            "closed_on": meta.get("closed_on", "None"),
+            "avg_duration": meta.get("avg_duration", 1.0),
+        })
+    return out
+
+
+def build_meal_suggestions(
+    home: Tuple[float, float],
+    base_stops: List[Dict],
+    requested_meals: List[str],
+    diet: Optional[str],
+    weekday_index: int,
+    trip_start_min: int,
+    trip_end_min: int,
+    selections: Dict = None,
+) -> Dict[str, List[Dict]]:
+    """For each requested meal, a short list of diet-appropriate restaurants that
+    are open during the meal slot, ranked by least detour from the planned route.
+    The user's already-chosen place (if any) is flagged `added` and pinned on top;
+    a place chosen for another meal is excluded so each spot is used once."""
+    selections = selections or {}
+    food = get_food_places()
+    by_id = {p["id"]: p for p in food}
+    route_points = [home] + [(s["lat"], s["lng"]) for s in base_stops]
+
+    suggestions: Dict[str, List[Dict]] = {}
+    for meal in requested_meals:
+        sel_id = selections.get(meal)
+        other_selected = {v for k, v in selections.items() if k != meal and v}
+
+        eligible = []
+        for p in food:
+            if p["id"] in other_selected:
+                continue
+            if not diet_eligible(p["diet"], diet):
+                continue
+            win = meal_window_for_place(
+                meal, p["closed_on"], p["regular_hours"], p["special_hours"],
+                weekday_index, trip_start_min, trip_end_min,
+            )
+            if win is None:
+                continue
+            eligible.append(p)
+
+        ranked = rank_by_route_proximity(route_points, eligible, time_matrix_with_fallback)
+        cards = [suggestion_card(p, detour, added=(p["id"] == sel_id))
+                 for detour, p in ranked[:N_SUGGESTIONS]]
+
+        # Pin the user's current pick on top even if it isn't in the nearest N.
+        if sel_id and sel_id in by_id and not any(c["id"] == sel_id for c in cards):
+            detour = next((d for d, p in ranked if p["id"] == sel_id), 0.0)
+            cards.insert(0, suggestion_card(by_id[sel_id], detour, added=True))
+
+        suggestions[meal] = cards
+    return suggestions
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +355,17 @@ def plan_itinerary(
     start_lng: float,
     trip_start: str,
     trip_end: str,
+    meal_anchors: List[Dict] = None,
 ) -> Dict:
     """
     Wraps OR-Tools solver. Returns {"stops": [...], "skipped": [...],
     "used_distance_fallback": bool}.
+
+    meal_anchors: optional [{"place": <food dict>, "meal": "lunch"}, ...]. Each
+    is forced into the route (is_anchor) with a time window clamped to its meal
+    slot, so a restaurant the user picked is scheduled at the right time and the
+    rest of the day re-optimises around it. Meal stops are flagged is_meal in the
+    output.
 
     Bug fixed vs the previous version of this wrapper: candidates with
     status "Closed Today"/"Closed" used to be filtered out before ever
@@ -343,6 +440,33 @@ def plan_itinerary(
             hours_source=resolved.source,
         ))
 
+    # Selected meal restaurants: forced into the route at their meal slot.
+    meal_label_by_id: Dict[str, str] = {}
+    meal_place_by_id: Dict[str, Dict] = {}
+    for ma in (meal_anchors or []):
+        fp, meal = ma["place"], ma["meal"]
+        win = meal_window_for_place(
+            meal, fp.get("closed_on", "None"), fp.get("regular_hours", "Unknown"),
+            fp.get("special_hours", "None"), weekday_index, trip_start_mins, trip_end_mins,
+        )
+        if win is None:
+            # The pick can't be fitted at its meal time today -- say so plainly.
+            skipped_output.append({
+                "order": None, "id": fp["id"], "name": fp["name"],
+                "lat": fp["lat"], "lng": fp["lng"], "relevance": 1.0,
+                "vibe": fp.get("vibe", ""), "insight": fp.get("insight", ""),
+                "status": "Closed", "is_meal": True, "meal": meal,
+                "skipped_reason": f"can't be fitted for {MEAL_LABELS.get(meal, meal).lower()} today — it isn't open during that window",
+            })
+            continue
+        meal_label_by_id[fp["id"]] = meal
+        meal_place_by_id[fp["id"]] = fp
+        places.append(Place(
+            id=fp["id"], name=fp["name"], lat=fp["lat"], lng=fp["lng"],
+            duration_min=min(round(float(fp.get("avg_duration", 1.0)) * 60), MEAL_DURATION_CAP_MIN),
+            relevance=1.0, window=win, is_anchor=True, hours_source="regular",
+        ))
+
     result = ortools_plan(
         home=(start_lat, start_lng),
         trip_start_min=trip_start_mins,
@@ -351,14 +475,20 @@ def plan_itinerary(
         time_matrix_fn=time_matrix_with_fallback,
     )
 
-    # Build candidate lookup by id for skipped reasons
+    # Build candidate lookup by id for skipped reasons (include meal places).
     cand_by_id = {c["id"]: c for c in candidates}
+    cand_by_id.update(meal_place_by_id)
 
     weekday_name = WEEKDAYS[weekday_index]
 
     stops_output = []
     for i, stop in enumerate(result.stops):
         c = cand_by_id.get(stop.place.id, {})
+        meal = meal_label_by_id.get(stop.place.id)
+        if meal:
+            timing = f"{MEAL_LABELS[meal]} stop — slotted into your route around {to_hhmm(stop.arrival_min)} with the least detour."
+        else:
+            timing = _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins)
         stops_output.append({
             "order":             i + 1,
             "id":                stop.place.id,
@@ -374,7 +504,10 @@ def plan_itinerary(
             "insight":           c.get("insight", ""),
             "status":            c.get("status", ""),
             "availability_note": c.get("availability_note", ""),
-            "timing_reason":     _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins),
+            "is_meal":           bool(meal),
+            "meal":              meal,
+            "rating":            c.get("rating", 0.0),
+            "timing_reason":     timing,
         })
 
     for place, reason in result.skipped:

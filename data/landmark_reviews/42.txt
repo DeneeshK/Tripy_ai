@@ -1,0 +1,17 @@
+ID: 42
+NAME: Azad Restaurant (Overbridge)
+CATEGORY: Biryani & Non-Vegetarian Restaurant / Culinary Landmark
+
+[RAW_REVIEW_REPOSITORY]
+
+"A Travancore biryani institution in Feb 2026. The Overbridge branch on M G Road, near the old Sree Padmanabha theatre, is the one locals mean when they just say 'Azad'. Two floors, always packed at lunch. Feb 2026"
+
+"SIGNATURE DISHES: The Travancore-style mutton biryani is the headline — milder and more fragrant than a Malabar biryani, well-cooked and generous. The beef fry and chicken biryani are also reliable. Come hungry; portions are large. Jan 2026"
+
+"PRICING & VALUE: Genuinely cheap for what you get — around Rs 350-450 for two. This is one of the best value non-veg meals in the city. 2025"
+
+"AMBIANCE & CROWD: A neat, spacious two-floor hall, but it fills fast. Rated about 3.7 across 7800+ reviews — the dip is mostly people hitting it at peak lunch (1-2 PM) when there's a wait and the kitchen is slammed. Go slightly off-peak and it's smooth. Oct 2025"
+
+"LOGISTICS: Azad Plaza, Overbridge, M G Road, near Cycle Mart, Thiruvananthapuram Fort side. Open roughly 11:00 AM to 11:30 PM. Parking on M G Road is a nightmare — take an auto. 2024"
+
+"LOCAL TIP: Biryani sells out of the best cuts by mid-afternoon, so for mutton get there by 1 PM. Pair it with their pazham (banana) or a sulaimani to finish. 2024"

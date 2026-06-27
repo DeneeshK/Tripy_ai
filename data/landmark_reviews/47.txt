@@ -1,0 +1,17 @@
+ID: 47
+NAME: Coconut Grove
+CATEGORY: Seafood Restaurant / Beach-side Dining
+
+[RAW_REVIEW_REPOSITORY]
+
+"The seafood highlight of a Kovalam day in Feb 2026. Pick your fish fresh off the ice and have it cooked to order while you sit overlooking the beach. One of the highest-rated dining spots in the district. Feb 2026"
+
+"SIGNATURE DISHES: The catch-of-the-day is the whole point — king fish, prawns, crab, lobster when available, done tandoori-style, grilled or in a Kerala masala. Ask the price per kilo before you commit, since it's market-rate by weight. Jan 2026"
+
+"PRICING & VALUE: Higher than a city eatery and very dependent on what seafood you choose — budget roughly Rs 1500-2500 for two with a good fish. The setting and freshness justify it for a one-off treat. 2025"
+
+"AMBIANCE & CROWD: Relaxed, holiday-mode, sea-view seating — perfect at sunset. Rated about 4.6 on TripAdvisor. Touristy by nature, so it's calmer on weekday evenings. Oct 2025"
+
+"LOGISTICS: Kovalam, near Lighthouse Beach, about 16 km south of the city centre. Open roughly 12:00 noon to 11:00 PM. Plan it as a late-afternoon-into-sunset stop on a Kovalam/Lighthouse Beach trip, not a quick city lunch. 2024"
+
+"LOCAL TIP: Confirm the per-kg price and the exact fish before it's cooked to avoid bill surprises. Time your table for golden hour — the sea view is the dish that comes free. 2024"
