@@ -19,7 +19,21 @@ function wxEmoji(code) {
 
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '')
 
-export default function WeatherWidget({ userLocation, stops = [], onReplan, replanLoading }) {
+// "YYYY-MM-DD" -> "Tomorrow · Sun, 5 Jul" so the user knows which day the
+// per-stop forecast is actually for.
+function dayLabel(dateStr) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr + 'T00:00:00')
+  if (isNaN(d.getTime())) return ''
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const diff = Math.round((d - today) / 86400000)
+  const wd = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+  if (diff === 0) return `Today · ${wd}`
+  if (diff === 1) return `Tomorrow · ${wd}`
+  return wd
+}
+
+export default function WeatherWidget({ userLocation, stops = [], tripDate, onReplan, replanLoading }) {
   const [data, setData]         = useState(null)
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading]   = useState(false)
@@ -35,15 +49,16 @@ export default function WeatherWidget({ userLocation, stops = [], onReplan, repl
         body:    JSON.stringify({
           lat:   userLocation[0],
           lng:   userLocation[1],
+          date:  tripDate || null,
           stops: (stops || []).map(s => ({ name: s.name, lat: s.lat, lng: s.lng, arrive_at: s.arrive_at })),
         }),
       })
       if (res.ok) setData(await res.json())
     } catch { /* keep last reading on transient failure */ }
     finally { setLoading(false) }
-  }, [userLocation, stops])
+  }, [userLocation, stops, tripDate])
 
-  // Refetch when location or the planned stops change, then poll on a timer.
+  // Refetch when location, the planned stops, or the trip day change, then poll.
   useEffect(() => {
     if (!userLocation) return
     fetchWeather()
@@ -123,7 +138,9 @@ export default function WeatherWidget({ userLocation, stops = [], onReplan, repl
 
           {stopRows.length > 0 && (
             <>
-              <div style={{ ...S.sectionLabel, marginTop: '10px' }}>Along your trip</div>
+              <div style={{ ...S.sectionLabel, marginTop: '10px' }}>
+                Along your trip{tripDate ? ` · ${dayLabel(tripDate)}` : ''}
+              </div>
               {stopRows.map((s, i) => (
                 <div key={i} style={{
                   ...S.row,

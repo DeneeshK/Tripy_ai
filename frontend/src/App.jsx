@@ -12,6 +12,7 @@ export default function App() {
   const [route, setRoute]   = useState(null)
   const [gpsStatus, setGpsStatus] = useState('requesting')
   const [tripId, setTripId] = useState(null)
+  const [tripDate, setTripDate] = useState(null)
   const [weatherWarnings, setWeatherWarnings] = useState([])
   const [replanLoading, setReplanLoading] = useState(false)
   const [weatherDismissed, setWeatherDismissed] = useState(false)
@@ -56,6 +57,7 @@ export default function App() {
   const onPlanReady = useCallback((plan) => {
     applyPlan(plan, userLocation)
     if (plan.trip_id) setTripId(plan.trip_id)
+    if (plan.trip_date) setTripDate(plan.trip_date)
   }, [applyPlan, userLocation])
 
   // Weather polling -- runs every 30 min while a trip is active
@@ -205,6 +207,7 @@ export default function App() {
         <WeatherWidget
           userLocation={userLocation}
           stops={stops}
+          tripDate={tripDate}
           onReplan={handleReplan}
           replanLoading={replanLoading}
         />

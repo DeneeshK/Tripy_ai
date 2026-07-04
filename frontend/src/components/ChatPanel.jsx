@@ -4,25 +4,39 @@ import { Send, Loader2, MapPin, Clock, XCircle } from 'lucide-react'
 
 const API = ''  // vite proxy handles /api -> localhost:8000
 
-function StopCard({ stop, index }) {
+function StopCard({ stop, index, onRemove, busy }) {
   const meal = stop.is_meal
-  const accent = meal ? '#b45309' : '#2563eb'
+  const dest = stop.is_destination
+  const accent = meal ? '#b45309' : dest ? '#7c3aed' : '#2563eb'
+  const badge  = meal ? '🍽' : dest ? '🏁' : index + 1
   return (
     <div style={{
-      background: meal ? '#fffbeb' : '#fff', border: `1.5px solid ${meal ? '#fde68a' : '#dbeafe'}`,
-      borderRadius: '10px', padding: '10px 14px', marginBottom: '10px',
+      background: meal ? '#fffbeb' : '#fff',
+      border: `1.5px solid ${meal ? '#fde68a' : dest ? '#ddd6fe' : '#dbeafe'}`,
+      borderRadius: '10px', padding: '10px 12px 10px 14px', marginBottom: '10px',
       boxShadow: '0 1px 3px rgba(37,99,235,0.08)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <span style={{
           background: accent, color: '#fff', borderRadius: '50%',
           width: '20px', height: '20px', display: 'inline-flex', alignItems: 'center',
           justifyContent: 'center', fontSize: '11px', fontWeight: 700, flexShrink: 0,
-        }}>{meal ? '🍽' : index + 1}</span>
-        <strong style={{ fontSize: '15px', color: accent, fontWeight: 700 }}>{stop.name}</strong>
-      </div>
-      <div style={{ fontSize: '12px', color: '#6b7280', margin: '4px 0 0 28px' }}>
-        {stop.visit_starts} – {stop.visit_ends}
+        }}>{badge}</span>
+        <strong style={{ fontSize: '15px', color: accent, fontWeight: 700, flex: 1 }}>{stop.name}</strong>
+        <span style={{ fontSize: '12px', color: '#6b7280', flexShrink: 0 }}>
+          {stop.visit_starts}–{stop.visit_ends}
+        </span>
+        {onRemove && (
+          <button
+            onClick={onRemove} disabled={busy} title="Remove from plan"
+            style={{
+              background: 'none', border: 'none', cursor: busy ? 'default' : 'pointer',
+              color: '#c4c4c4', padding: '0 0 0 2px', lineHeight: 1, flexShrink: 0,
+              opacity: busy ? 0.4 : 1,
+            }}>
+            <XCircle size={16} />
+          </button>
+        )}
       </div>
       {stop.timing_reason && (
         <div style={{ fontSize: '12.5px', color: '#4b5563', margin: '4px 0 0 28px', lineHeight: '1.4' }}>
@@ -46,6 +60,27 @@ function SkippedCard({ place }) {
       <div style={{ fontSize: '12px', color: '#9ca3af', paddingLeft: '20px' }}>
         {place.skipped_reason}
       </div>
+    </div>
+  )
+}
+
+// Low-priority "why these didn't make the cut" list -- collapsed by default so
+// the itinerary reads cleanly; the curious can expand it.
+function SkippedSection({ skipped }) {
+  const [open, setOpen] = useState(false)
+  if (!skipped?.length) return null
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%', marginTop: '-2px' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
+          fontSize: '11px', fontWeight: 700, color: '#9ca3af',
+          textTransform: 'uppercase', letterSpacing: '0.04em',
+        }}>
+        {open ? '▾' : '▸'} Didn't make the cut ({skipped.length})
+      </button>
+      {open && skipped.map(p => <SkippedCard key={p.id || p.name} place={p} />)}
     </div>
   )
 }
@@ -158,6 +193,7 @@ function bestPick(list) {
 }
 
 function MealSuggestions({ suggestions, selections, onAdd, busy }) {
+  const [expanded, setExpanded] = useState({})
   const meals = MEAL_ORDER.filter(m => suggestions?.[m]?.length)
   const empty = MEAL_ORDER.filter(m => Array.isArray(suggestions?.[m]) && !suggestions[m].length)
   if (!meals.length && !empty.length) return null
@@ -169,8 +205,10 @@ function MealSuggestions({ suggestions, selections, onAdd, busy }) {
         </div>
       ))}
       {meals.map(meal => {
-        const list   = suggestions[meal]
-        const picked = selections?.[meal]
+        const listAll = suggestions[meal]
+        const isOpen  = expanded[meal]
+        const list    = isOpen ? listAll : listAll.slice(0, 3)
+        const picked  = selections?.[meal]
         return (
           <div key={meal} style={{ marginBottom: '8px' }}>
             <div style={{
@@ -208,6 +246,16 @@ function MealSuggestions({ suggestions, selections, onAdd, busy }) {
                 onAdd={() => onAdd(meal, card.id)}
               />
             ))}
+            {listAll.length > 3 && (
+              <button
+                onClick={() => setExpanded(e => ({ ...e, [meal]: !isOpen }))}
+                style={{
+                  background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer',
+                  fontSize: '12px', fontWeight: 600, padding: '2px 4px', marginBottom: '4px',
+                }}>
+                {isOpen ? 'Show fewer' : `Show ${listAll.length - 3} more option${listAll.length - 3 > 1 ? 's' : ''}`}
+              </button>
+            )}
           </div>
         )
       })}
@@ -359,6 +407,31 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     finally { setMealBusy(false) }
   }
 
+  // ✕ on a stop -> re-plan without it. Removing a meal un-picks it; removing a
+  // sightseeing stop/destination excludes it and re-optimises the rest.
+  async function removeStop(msgIndex, tripId, id) {
+    if (!tripId || mealBusy) return
+    setMealBusy(true)
+    try {
+      const res = await fetch(`${API}/api/trip/${tripId}/remove`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ id }),
+      })
+      if (res.ok) {
+        const plan = await res.json()
+        updateMessageAt(msgIndex, {
+          stops:           plan.stops || [],
+          skipped:         plan.skipped || [],
+          mealSuggestions: plan.meal_suggestions || {},
+          mealSelections:  seedSelections(plan.meal_suggestions),
+        })
+        if (plan.stops?.length) onPlanReady(plan)
+      }
+    } catch { /* leave the previous plan in place on failure */ }
+    finally { setMealBusy(false) }
+  }
+
   const styles = {
     panel: {
       display: 'flex', flexDirection: 'column', height: '100%',
@@ -428,12 +501,23 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
             <div style={styles.bubble(m.role)}>
               <ReactMarkdown components={markdownComponents}>{m.content}</ReactMarkdown>
             </div>
-            {m.stops?.length > 0 && (
-              <div style={styles.skippedWrap}>
-                <div style={styles.stopsLabel}>Your itinerary, with reasons</div>
-                {m.stops.map((s, idx) => <StopCard key={s.name} stop={s} index={idx} />)}
-              </div>
-            )}
+            {m.stops?.length > 0 && (() => {
+              let n = 0
+              return (
+                <div style={styles.skippedWrap}>
+                  <div style={styles.stopsLabel}>Your itinerary · tap ✕ to drop a stop</div>
+                  {m.stops.map(s => {
+                    const num = (!s.is_meal && !s.is_destination) ? n++ : null
+                    return (
+                      <StopCard
+                        key={s.id || s.name} stop={s} index={num} busy={mealBusy}
+                        onRemove={m.tripId ? () => removeStop(i, m.tripId, s.id) : null}
+                      />
+                    )
+                  })}
+                </div>
+              )
+            })()}
             {m.mealSuggestions && (
               <MealSuggestions
                 suggestions={m.mealSuggestions}
@@ -442,12 +526,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
                 onAdd={(meal, placeId) => addMeal(i, m.tripId, meal, placeId)}
               />
             )}
-            {m.skipped?.length > 0 && (
-              <div style={styles.skippedWrap}>
-                <div style={styles.skippedLabel}>Didn't make the cut</div>
-                {m.skipped.map(p => <SkippedCard key={p.name} place={p} />)}
-              </div>
-            )}
+            {m.skipped?.length > 0 && <SkippedSection skipped={m.skipped} />}
           </React.Fragment>
         ))}
         {loading && (

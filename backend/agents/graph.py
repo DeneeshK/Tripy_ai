@@ -34,6 +34,7 @@ from agents.weather import check_weather_for_stops
 from agents.categories import apply_weather_bias
 from rag.search import (
     smart_search, plan_itinerary, get_food_places, build_meal_suggestions, WEEKDAYS,
+    resolve_place_coords, get_place_record,
 )
 from engine.meals import (
     MEAL_ORDER, MEAL_LABELS, MEAL_DURATION_CAP_MIN, FOOD_CATEGORIES,
@@ -109,6 +110,14 @@ def plan_trip_node(state: TripState) -> TripState:
     """
     weekday_index = _weekday_index(state.get("day"))
     ts_min, te_min = _to_mins(state["trip_start"]), _to_mins(state["trip_end"])
+
+    # A named START location overrides the GPS home -- the journey begins there
+    # ("I want to travel FROM Vizhinjam..."). Falls back to GPS if unrecognised.
+    start_name = (state.get("start_place") or "").strip()
+    if start_name:
+        coords = resolve_place_coords(start_name)
+        if coords:
+            state["home_lat"], state["home_lng"] = coords[0], coords[1]
     home = (state["home_lat"], state["home_lng"])
 
     # ── Phase 1: the locked sightseeing base ────────────────────────────────
@@ -117,6 +126,16 @@ def plan_trip_node(state: TripState) -> TripState:
         base_stops   = state["base_stops"]
         base_skipped = state.get("base_skipped", [])
     else:
+        # A named END destination ("...to Napier Museum") is force-scheduled as
+        # the day's final stop, with sightseeing optimised in between.
+        end_name = (state.get("end_place") or "").strip()
+        destination = None
+        if end_name:
+            destination = get_place_record(
+                end_name, WEEKDAYS[weekday_index], state["trip_start"], state["trip_end"]
+            )
+        state["end_place_id"] = destination["id"] if destination else None
+
         candidates = smart_search(
             user_query=state["query"], user_lat=home[0], user_lng=home[1],
             target_time=state["trip_start"], target_day=state.get("day"),
@@ -125,7 +144,26 @@ def plan_trip_node(state: TripState) -> TripState:
         candidates = apply_weather_bias(candidates, state.get("prefer_indoor", False))
         # Sightseeing only -- restaurants come exclusively through the meal flow.
         candidates = [c for c in candidates if c.get("category") not in FOOD_CATEGORIES]
-        base = plan_itinerary(candidates, home[0], home[1], state["trip_start"], state["trip_end"])
+
+        # Force-include any landmarks the user named ("include Kuthira Malika").
+        # Already-present candidates are just flagged as anchors; new ones are
+        # pulled in as anchor candidates so the solver keeps them in the route.
+        by_id = {c["id"]: c for c in candidates}
+        for nm in (state.get("include_places") or []):
+            rec = get_place_record(nm, WEEKDAYS[weekday_index], state["trip_start"], state["trip_end"])
+            if not rec or (destination and rec["id"] == destination["id"]):
+                continue
+            if rec["id"] in by_id:
+                by_id[rec["id"]]["is_anchor"] = True
+            else:
+                rec = dict(rec, is_anchor=True)
+                candidates.append(rec)
+                by_id[rec["id"]] = rec
+
+        base = plan_itinerary(
+            candidates, home[0], home[1], state["trip_start"], state["trip_end"],
+            destination=destination,
+        )
         base_stops, base_skipped = base["stops"], base["skipped"]
         state["base_stops"] = base_stops
         state["base_skipped"] = base_skipped
@@ -160,7 +198,17 @@ def plan_trip_node(state: TripState) -> TripState:
 
 
 def check_weather_node(state: TripState) -> TripState:
-    """Weather Monitoring Agent: checks the forecast against upcoming stops."""
+    """Weather Monitoring Agent: checks the forecast against upcoming stops on the
+    TRIP'S day (not today, when the trip is scheduled for a future date)."""
+    # The reference day for the forecast is the planned trip date; only fall back
+    # to 'now' if we somehow don't have one.
+    trip_date_str = state.get("trip_date")
+    try:
+        ref_day = datetime.fromisoformat(trip_date_str) if trip_date_str else datetime.now()
+    except ValueError:
+        ref_day = datetime.now()
+    is_today = ref_day.date() == datetime.now().date()
+
     now_str = state.get("simulated_now")
     now = datetime.strptime(now_str, "%H:%M") if now_str else datetime.now()
     now_min = now.hour * 60 + now.minute
@@ -168,7 +216,9 @@ def check_weather_node(state: TripState) -> TripState:
     upcoming = []
     for s in state.get("stops", []):
         arrive_h, arrive_m = map(int, s["arrive_at"].split(":"))
-        if arrive_h * 60 + arrive_m >= now_min:
+        # For a future-dated trip nothing has been visited yet -> every stop is
+        # upcoming. For a today trip, drop the ones already behind us.
+        if not is_today or arrive_h * 60 + arrive_m >= now_min:
             upcoming.append({"name": s["name"], "lat": s["lat"], "lng": s["lng"], "arrive_at": s["arrive_at"]})
 
     if not upcoming:
@@ -179,7 +229,7 @@ def check_weather_node(state: TripState) -> TripState:
         state["last_checked_at"] = datetime.now().isoformat(timespec="seconds")
         return state
 
-    warnings, failed, error = check_weather_for_stops(upcoming, datetime.now())
+    warnings, failed, error = check_weather_for_stops(upcoming, ref_day)
 
     state["weather_warnings"] = [
         {

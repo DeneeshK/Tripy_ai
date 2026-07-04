@@ -95,7 +95,16 @@ def plan_itinerary(
     trip_end_min: int,
     candidates: List[Place],
     time_matrix_fn=dm.time_matrix_with_fallback,
+    end_place: Optional[Place] = None,
 ) -> PlanResult:
+    """Plan a route from `home` through the best subset of `candidates`.
+
+    When `end_place` is given (the user said "...to <destination>"), it becomes
+    the vehicle's END node so the day is guaranteed to FINISH there, with the
+    sightseeing optimised in between. If forcing that end makes the trip
+    infeasible, we fall back to treating the destination as an ordinary
+    must-visit anchor so the plan still succeeds.
+    """
     result = PlanResult()
     feasible: List[Place] = []
 
@@ -112,26 +121,39 @@ def plan_itinerary(
             continue
         feasible.append(p)
 
-    if not feasible:
+    # A forced end is only usable if the destination can actually be visited
+    # today; otherwise the caller surfaces it as skipped and we plan normally.
+    use_end = (
+        end_place is not None and end_place.window is not None
+        and end_place.window[1] - end_place.duration_min >= end_place.window[0]
+    )
+
+    if not feasible and not use_end:
         return result
 
-    # --- Build the travel-time matrix: node 0 = home, 1..n = places.
-    points = [home] + [(p.lat, p.lng) for p in feasible]
+    # --- Build the travel-time matrix: node 0 = home, 1..n = places. The last
+    # node (n_places+1) is either a real destination (forced end) or a virtual
+    # zero-cost sink (open-ended day, original behaviour).
+    n_places = len(feasible)
+    if use_end:
+        points = [home] + [(p.lat, p.lng) for p in feasible] + [(end_place.lat, end_place.lng)]
+    else:
+        points = [home] + [(p.lat, p.lng) for p in feasible]
     matrix, used_fallback = time_matrix_fn(points)
     result.used_distance_fallback = used_fallback
 
-    n_places = len(feasible)
-    sink = n_places + 1
-    total_nodes = n_places + 2  # home + places + sink
-
-    service_min = [0] + [p.duration_min for p in feasible] + [0]
+    end_node = n_places + 1
+    total_nodes = n_places + 2  # home + places + (destination or sink)
+    end_dur = end_place.duration_min if use_end else 0
+    service_min = [0] + [p.duration_min for p in feasible] + [end_dur]
 
     def travel(i: int, j: int) -> float:
-        if i == sink or j == sink:
+        # Only the virtual sink is free; a real destination has real travel time.
+        if not use_end and (i == end_node or j == end_node):
             return 0.0
         return matrix[i][j]
 
-    manager = pywrapcp.RoutingIndexManager(total_nodes, 1, [0], [sink])
+    manager = pywrapcp.RoutingIndexManager(total_nodes, 1, [0], [end_node])
     routing = pywrapcp.RoutingModel(manager)
 
     def transit_callback(from_idx, to_idx):
@@ -151,13 +173,18 @@ def plan_itinerary(
     )
     time_dim = routing.GetDimensionOrDie("Time")
 
-    # Home: fixed departure at trip start. Sink: anytime by trip end.
+    # Home: fixed departure at trip start. End node: within its own opening
+    # window if it's a real destination, else anytime by trip end.
     # NOTE: a vehicle's start/end nodes are NOT reachable via manager.NodeToIndex()
     # once they're declared as starts/ends -- that returns -1 and silently
     # segfaults the C++ solver on first use. routing.Start()/routing.End() are
     # the only correct way to get their internal index.
     time_dim.CumulVar(routing.Start(0)).SetRange(trip_start_min, trip_start_min)
-    time_dim.CumulVar(routing.End(0)).SetRange(trip_start_min, trip_end_min)
+    if use_end:
+        eo, ec = end_place.window
+        time_dim.CumulVar(routing.End(0)).SetRange(eo, min(ec - end_place.duration_min, trip_end_min))
+    else:
+        time_dim.CumulVar(routing.End(0)).SetRange(trip_start_min, trip_end_min)
 
     for node, p in enumerate(feasible, start=1):
         open_m, close_m = p.window
@@ -174,6 +201,14 @@ def plan_itinerary(
 
     solution = routing.SolveWithParameters(search_params)
     if solution is None:
+        # Forcing the end made it infeasible -- retry once with the destination
+        # demoted to an ordinary must-visit anchor so the user still gets a plan.
+        if use_end:
+            anchor = end_place
+            anchor.is_anchor = True
+            return plan_itinerary(
+                home, trip_start_min, trip_end_min, candidates + [anchor], time_matrix_fn, end_place=None
+            )
         # Should be rare since every node is droppable, but stay honest if it happens.
         for p in feasible:
             result.skipped.append((p, "optimizer could not fit this into any route today"))
@@ -191,6 +226,12 @@ def plan_itinerary(
             visited_nodes.add(node)
             route_indices.append(node)
         index = solution.Value(routing.NextVar(index))
+
+    if use_end:
+        end_arrival = solution.Value(time_dim.CumulVar(routing.End(0)))
+        result.stops.append(Stop(place=end_place, arrival_min=end_arrival,
+                                 departure_min=end_arrival + end_place.duration_min))
+        route_indices.append(end_node)
 
     avg_chosen_relevance = (
         sum(s.place.relevance for s in result.stops) / len(result.stops) if result.stops else 0.0

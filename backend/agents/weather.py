@@ -47,15 +47,25 @@ def describe_weather_code(code: int) -> str:
     return WMO_DESCRIPTIONS.get(code, f"weather code {code}")
 
 
-def fetch_hourly_forecast(lat: float, lng: float, timeout: float = 8.0) -> dict:
+def fetch_hourly_forecast(lat: float, lng: float, target_date=None, timeout: float = 8.0) -> dict:
     """
     Real Open-Meteo call. Raises on any network/parse failure -- callers
     should catch and degrade gracefully (see check_weather_for_stops).
+
+    target_date (a date, datetime, or 'YYYY-MM-DD' string) pins the forecast to
+    the trip's actual day -- so a trip planned for tomorrow (or a date up to ~16
+    days out) is checked against THAT day's forecast, not today's. When omitted,
+    it falls back to a 2-day window (today + tomorrow).
     """
+    if target_date is not None:
+        ds = target_date if isinstance(target_date, str) else target_date.strftime("%Y-%m-%d")
+        window = f"&start_date={ds}&end_date={ds}"
+    else:
+        window = "&forecast_days=2"
     params = (
         f"latitude={lat:.6f}&longitude={lng:.6f}"
         f"&hourly=precipitation_probability,weather_code,temperature_2m"
-        f"&forecast_days=2&timezone=auto"
+        f"{window}&timezone=auto"
     )
     url = f"{OPEN_METEO_BASE}?{params}"
     with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -106,7 +116,7 @@ def check_weather_for_stops(
         try:
             h, m = map(int, stop["arrive_at"].split(":"))
             target_dt = trip_date.replace(hour=h, minute=m, second=0, microsecond=0)
-            data = fetch_hourly_forecast(stop["lat"], stop["lng"])
+            data = fetch_hourly_forecast(stop["lat"], stop["lng"], target_date=trip_date.date())
         except Exception as e:
             # One stop's forecast failing shouldn't take down the whole check --
             # but the caller needs to know at least one lookup didn't work.
@@ -167,7 +177,7 @@ def conditions_for_stops(stops: List[dict], trip_date: datetime) -> Tuple[List[d
         try:
             h, m = map(int, stop["arrive_at"].split(":"))
             target_dt = trip_date.replace(hour=h, minute=m, second=0, microsecond=0)
-            data = fetch_hourly_forecast(stop["lat"], stop["lng"])
+            data = fetch_hourly_forecast(stop["lat"], stop["lng"], target_date=trip_date.date())
         except Exception as e:
             return rows, True, f"Couldn't reach the weather service: {e}"
 

@@ -29,6 +29,7 @@ class TripState(TypedDict, total=False):
     home_lng: float
     day: Optional[str]
     weekday_index: int
+    trip_date: Optional[str]   # "YYYY-MM-DD" -- the actual day, for weather on the right date
     trip_start: str   # "HH:MM"
     trip_end: str      # "HH:MM"
 
@@ -53,6 +54,15 @@ class TripState(TypedDict, total=False):
     meal_times: Dict[str, str]          # meal -> "HH:MM" the user must eat at (e.g. medication)
     specific_food_place: Optional[str]
     meal_suggestions: Dict[str, list]
+
+    # Named start / end. start_place overrides the GPS home (the journey begins
+    # there); end_place is force-included as the LAST stop of the day ("from X to
+    # Y"). end_place_id caches the resolved landmark id so a later remove/edit can
+    # tell the destination apart from an ordinary stop.
+    start_place: Optional[str]
+    end_place: Optional[str]
+    end_place_id: Optional[str]
+    include_places: List[str]   # landmark names to force into the plan (anchors)
 
     # The LOCKED sightseeing route. Computed once and reused so adding/removing a
     # meal never reshuffles the day. reuse_base tells the planner to skip the

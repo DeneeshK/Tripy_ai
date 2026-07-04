@@ -12,6 +12,7 @@ scores are returned and used -- the original only asked for "metadatas" and
 "documents", silently discarding the similarity ranking.
 """
 
+import difflib
 import math
 import sys
 from datetime import datetime, timedelta
@@ -208,6 +209,143 @@ def smart_search(
 
 
 # ---------------------------------------------------------------------------
+# Named location resolution (start point / end destination)
+# ---------------------------------------------------------------------------
+
+# Common Trivandrum localities that aren't themselves landmarks in the DB, so a
+# user can start "from Kovalam" / "from Technopark" even though we don't store a
+# sightseeing row for them. Coordinates are approximate town/area centres.
+_GAZETTEER = {
+    "vizhinjam": (8.3790, 76.9959),
+    "kovalam": (8.4004, 76.9787),
+    "technopark": (8.5580, 76.8810),
+    "kazhakoottam": (8.5580, 76.8810),
+    "east fort": (8.4838, 76.9434),
+    "thampanoor": (8.4876, 76.9525),
+    "railway station": (8.4876, 76.9525),
+    "pattom": (8.5150, 76.9440),
+    "kowdiar": (8.5180, 76.9560),
+    "medical college": (8.5240, 76.9210),
+    "palayam": (8.4980, 76.9490),
+    "secretariat": (8.4900, 76.9490),
+    "statue": (8.4900, 76.9490),
+    "airport": (8.4821, 76.9199),
+    "sreekariyam": (8.5530, 76.9130),
+    "neyyattinkara": (8.3960, 77.0870),
+    "varkala": (8.7379, 76.7163),
+    "poovar": (8.3140, 77.0700),
+    "trivandrum": (8.4900, 76.9490),
+    "thiruvananthapuram": (8.4900, 76.9490),
+}
+
+
+def _all_place_rows() -> List[Dict]:
+    """Lightweight {id, name, lat, lng} for every place in the store."""
+    res = _get_collection().get(include=["metadatas"])
+    return [
+        {"id": pid, "name": res["metadatas"][i].get("name", ""),
+         "lat": res["metadatas"][i]["lat"], "lng": res["metadatas"][i]["lng"]}
+        for i, pid in enumerate(res["ids"])
+    ]
+
+
+def _match_name(query: str, names: List[str], cutoff: float = 0.72) -> Optional[int]:
+    """Index of the place whose name best matches `query`, tolerant of typos and
+    partial names. Tries exact, then substring, then a fuzzy (difflib) match so
+    'napiar museum' still finds 'Napier Museum' and 'kuthiramalika' finds
+    'Kuthira Malika'. Returns None if nothing is close enough."""
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    lowered = [n.lower() for n in names]
+    if q in lowered:
+        return lowered.index(q)
+    # substring either way (user typed a fragment, or extra words)
+    partial = None
+    for i, nm in enumerate(lowered):
+        if q in nm or nm in q:
+            partial = i
+            break
+    if partial is not None:
+        return partial
+    # fuzzy: whole string, then token overlap for multi-word names
+    close = difflib.get_close_matches(q, lowered, n=1, cutoff=cutoff)
+    if close:
+        return lowered.index(close[0])
+    q_compact = q.replace(" ", "")
+    close = difflib.get_close_matches(q_compact, [n.replace(" ", "") for n in lowered], n=1, cutoff=cutoff)
+    if close:
+        return [n.replace(" ", "") for n in lowered].index(close[0])
+    return None
+
+
+def resolve_place_coords(name: str) -> Optional[Tuple[float, float]]:
+    """(lat, lng) for a named START/location. Matches DB landmark names first
+    (exact / substring / fuzzy), then a small gazetteer of Trivandrum localities.
+    Returns None if the name isn't recognised (caller keeps the GPS home)."""
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    rows = _all_place_rows()
+    i = _match_name(q, [p["name"] for p in rows])
+    if i is not None:
+        return (rows[i]["lat"], rows[i]["lng"])
+    for key, coords in _GAZETTEER.items():
+        if key in q:
+            return coords
+    gk = difflib.get_close_matches(q, list(_GAZETTEER), n=1, cutoff=0.8)
+    if gk:
+        return _GAZETTEER[gk[0]]
+    return None
+
+
+def resolve_place_ids(names: List[str]) -> List[str]:
+    """Resolve a list of place NAMES (possibly with typos) to their store ids,
+    for excluding/including places the user referred to in plain language."""
+    rows = _all_place_rows()
+    all_names = [p["name"] for p in rows]
+    out = []
+    for nm in (names or []):
+        i = _match_name(nm, all_names)
+        if i is not None and rows[i]["id"] not in out:
+            out.append(rows[i]["id"])
+    return out
+
+
+def get_place_record(name: str, day_name: str, current_time: str, end_time: str) -> Optional[Dict]:
+    """A full smart_search-style record for a specific landmark matched by name
+    (typo-tolerant), so it can be force-included as the day's end destination.
+    None if not found."""
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    res = _get_collection().get(include=["metadatas", "documents"])
+    names = [res["metadatas"][i].get("name", "") for i in range(len(res["ids"]))]
+    match_i = _match_name(q, names)
+    if match_i is None:
+        return None
+
+    meta = res["metadatas"][match_i]
+    doc = res["documents"][match_i] if res.get("documents") else ""
+    insight = doc.split("Insight: ", 1)[-1].strip() if "Insight: " in doc else ""
+    avail = check_availability(
+        meta.get("regular_hours", "Unknown"), meta.get("closed_on", "None"),
+        day_name, current_time, end_time,
+    )
+    return {
+        "id": res["ids"][match_i], "name": meta["name"], "lat": meta["lat"], "lng": meta["lng"],
+        "category": meta.get("category", ""), "relevance": 1.0,
+        "status": avail["status"], "opens_at": avail["opens_at"], "availability_note": avail["note"],
+        "vibe": meta.get("vibe_tags", ""), "insight": insight,
+        "regular_hours": meta.get("regular_hours", "Unknown"),
+        "special_hours": meta.get("special_hours", "None"),
+        "closed_on": meta.get("closed_on", "None"), "avg_duration": meta.get("avg_duration", 1.0),
+        "diet": meta.get("diet", "na"), "rating": meta.get("rating", 0.0),
+        "trip_window": f"{day_name} {current_time}–{end_time}",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Food places + per-meal suggestions
 # ---------------------------------------------------------------------------
 
@@ -357,6 +495,7 @@ def plan_itinerary(
     start_lng: float,
     trip_start: str,
     trip_end: str,
+    destination: Optional[Dict] = None,
 ) -> Dict:
     """
     Wraps OR-Tools solver. Returns {"stops": [...], "skipped": [...],
@@ -383,11 +522,17 @@ def plan_itinerary(
     trip_start_mins = to_mins(trip_start)
     trip_end_mins   = to_mins(trip_end)
 
-    # Determine weekday from trip_window field on first candidate, fallback today
+    # A named end destination is planned as the forced final stop -- make sure it
+    # isn't ALSO in the candidate pool (semantic search often surfaces it too).
+    if destination:
+        candidates = [c for c in candidates if c["id"] != destination["id"]]
+
+    # Determine weekday from trip_window field on first candidate (or the
+    # destination), fallback today
     weekday_index = datetime.now().weekday()
-    if candidates:
-        tw = candidates[0].get("trip_window", "")
-        day_part = tw.split(" ")[0] if tw else ""
+    tw_src = candidates[0] if candidates else (destination or None)
+    if tw_src:
+        day_part = (tw_src.get("trip_window", "") or "").split(" ")[0]
         if day_part in WEEKDAYS:
             weekday_index = WEEKDAYS.index(day_part)
 
@@ -434,8 +579,35 @@ def plan_itinerary(
             duration_min=round(float(c.get("avg_duration", 1.0)) * 60),
             relevance=c.get("relevance", 1.0),
             window=window,
+            is_anchor=c.get("is_anchor", False),
             hours_source=resolved.source,
         ))
+
+    # Build the forced end destination as a Place, if one was requested and it's
+    # actually open today (otherwise surface it as skipped, plan without it).
+    end_place = None
+    if destination:
+        d_resolved = resolve_for_day(
+            destination.get("closed_on", "None"), destination.get("regular_hours", "Unknown"),
+            destination.get("special_hours", "None"), weekday_index,
+        )
+        d_window = best_window_in_span(d_resolved, trip_start_mins, trip_end_mins)
+        if d_window is None:
+            skipped_output.append({
+                "order": None, "id": destination["id"], "name": destination["name"],
+                "lat": destination["lat"], "lng": destination["lng"],
+                "relevance": destination.get("relevance", 1.0), "vibe": destination.get("vibe", ""),
+                "insight": destination.get("insight", ""), "status": destination.get("status", "Closed"),
+                "skipped_reason": f"your destination {destination['name']} isn't open during this trip window",
+            })
+        else:
+            end_place = Place(
+                id=destination["id"], name=destination["name"],
+                lat=destination["lat"], lng=destination["lng"],
+                duration_min=round(float(destination.get("avg_duration", 1.0)) * 60),
+                relevance=destination.get("relevance", 1.0), window=d_window,
+                hours_source=d_resolved.source,
+            )
 
     result = ortools_plan(
         home=(start_lat, start_lng),
@@ -443,10 +615,13 @@ def plan_itinerary(
         trip_end_min=trip_end_mins,
         candidates=places,
         time_matrix_fn=time_matrix_with_fallback,
+        end_place=end_place,
     )
 
     # Build candidate lookup by id for skipped reasons.
     cand_by_id = {c["id"]: c for c in candidates}
+    if destination:
+        cand_by_id[destination["id"]] = destination
 
     weekday_name = WEEKDAYS[weekday_index]
 
@@ -470,8 +645,13 @@ def plan_itinerary(
             "availability_note": c.get("availability_note", ""),
             "is_meal":           False,
             "meal":              None,
+            "is_destination":    bool(destination and stop.place.id == destination["id"]),
             "rating":            c.get("rating", 0.0),
-            "timing_reason":     _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins),
+            "timing_reason":     (
+                f"Your chosen final stop — the day is planned to end here."
+                if destination and stop.place.id == destination["id"]
+                else _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins)
+            ),
         })
 
     for place, reason in result.skipped:

@@ -28,7 +28,7 @@ from pydantic import BaseModel
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rag.search import smart_search, plan_itinerary, WEEKDAYS
+from rag.search import smart_search, plan_itinerary, resolve_place_ids, WEEKDAYS
 from agents.graph import orchestrator
 from agents.state import trip_store, TripState
 
@@ -60,16 +60,23 @@ app.add_middleware(
 # ── Request models ────────────────────────────────────────────────────────────
 
 class PlanRequest(BaseModel):
-    query:      str
-    lat:        float
-    lng:        float
-    trip_start: str
-    trip_end:   str
-    day:        Optional[str]       = None
-    meals:      Optional[list[str]] = None
-    diet:       Optional[str]       = None
-    meal_times: Optional[dict]      = None
-    food_place: Optional[str]       = None
+    query:       str
+    lat:         float
+    lng:         float
+    trip_start:  str
+    trip_end:    str
+    day:            Optional[str]       = None
+    meals:          Optional[list[str]] = None
+    diet:           Optional[str]       = None
+    meal_times:     Optional[dict]      = None
+    food_place:     Optional[str]       = None
+    start_place:    Optional[str]       = None
+    end_place:      Optional[str]       = None
+    exclude_places: Optional[list[str]] = None
+    include_places: Optional[list[str]] = None
+
+class TripRemoveRequest(BaseModel):
+    id: str   # the stop id to drop from the plan
 
 class TripMealsRequest(BaseModel):
     # meal -> chosen restaurant id, e.g. {"lunch": "41", "dinner": "17"}
@@ -79,6 +86,7 @@ class WeatherRequest(BaseModel):
     lat:   float
     lng:   float
     stops: list[dict] = []   # [{name, lat, lng, arrive_at}] for the per-stop forecast
+    date:  Optional[str] = None   # "YYYY-MM-DD" trip day; forecast is pinned to it
 
 class ChatMessage(BaseModel):
     role:    str
@@ -118,6 +126,29 @@ def _weekday_index(day_name: str) -> int:
         return datetime.now().weekday()
 
 
+def _resolve_trip_date(day: Optional[str], explicit_date: Optional[str] = None) -> str:
+    """The trip's ABSOLUTE calendar date as 'YYYY-MM-DD', so weather is checked
+    for the right day. Priority: an explicit YYYY-MM-DD, then today/tomorrow, then
+    the next occurrence of a named weekday, else today."""
+    if explicit_date:
+        try:
+            return datetime.fromisoformat(explicit_date).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    now = datetime.now()
+    d = (day or "").strip().lower()
+    if d in ("", "today"):
+        return now.strftime("%Y-%m-%d")
+    if d == "tomorrow":
+        return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    cap = d.capitalize()
+    if cap in WEEKDAYS:
+        ahead = (WEEKDAYS.index(cap) - now.weekday()) % 7
+        ahead = ahead or 7   # "Monday" when today is Monday means next Monday
+        return (now + timedelta(days=ahead)).strftime("%Y-%m-%d")
+    return now.strftime("%Y-%m-%d")
+
+
 def _norm_meals(meals) -> list:
     """Canonicalise meal names from the model/UI. 'supper' -> 'dinner', dedupe,
     drop anything unrecognised, so downstream MEAL_SLOTS lookups always match."""
@@ -144,6 +175,74 @@ def _norm_meal_times(d) -> dict:
         if k2 in valid:
             out[k2] = str(v).strip()
     return out
+
+
+def _norm_diet(d) -> Optional[str]:
+    """Canonicalise the diet field into 'veg', 'nonveg', 'any', or None.
+      • 'any'  = the user explicitly has no preference ("either", "both", "mix")
+                 -> plan with no dietary filter.
+      • None   = we simply don't know yet -> the caller should ASK the user.
+    Keeping these two apart is what lets us ask once and never nag again (an
+    'either' answer resolves to 'any', so the question won't repeat)."""
+    d2 = str(d or "").strip().lower()
+    veg    = {"vegetarian", "pure veg", "veg", "veg only", "veggie"}
+    nonveg = {"non-vegetarian", "non vegetarian", "non-veg", "non veg", "nonveg", "non"}
+    anypref = {"any", "either", "both", "mix", "mixed", "no preference", "doesn't matter",
+               "does not matter", "whatever", "anything", "no pref", "dont care", "don't care"}
+    if d2 in veg:     return "veg"
+    if d2 in nonveg:  return "nonveg"
+    if d2 in anypref: return "any"
+    return None
+
+
+def _already_asked(messages, needle: str) -> bool:
+    """Did we already put this question to the user? Prevents re-asking (and any
+    ask loop when the user's answer stays ambiguous)."""
+    return any(getattr(m, "role", None) == "assistant" and needle in (m.content or "").lower()
+               for m in messages)
+
+
+# Marker phrases used both to render the question and to detect we already asked.
+_Q_INTEREST = "what kind of day"
+_Q_DIET     = "vegetarian or non-vegetarian"
+_Q_MEALTIME = "specific time"
+
+
+def _essential_info_question(calls, messages) -> Optional[str]:
+    """If a plan call is missing something essential, return the ONE question to
+    ask the user (asked at most once); else None so planning proceeds. Order:
+    interests → diet-for-meals → fixed/medical meal time."""
+    for c in calls:
+        if c.get("name") != "plan_my_day":
+            continue
+        try:
+            a = json.loads(c["arguments"])
+        except Exception:
+            return None
+
+        has_focus = bool((a.get("query") or "").strip() or a.get("include_places")
+                         or a.get("start_place") or a.get("end_place"))
+        if not has_focus and not _already_asked(messages, _Q_INTEREST):
+            return ("Happy to plan it! First — **what kind of day** are you after? "
+                    "Temples, beaches, museums, markets, nature… a vibe or a couple "
+                    "of must-sees is plenty.")
+
+        wants_meals = bool(_norm_meals(a.get("meals")))
+        if wants_meals and _norm_diet(a.get("diet")) is None \
+                and not _already_asked(messages, _Q_DIET):
+            return ("Before I sort out the food stops — would you like "
+                    "**vegetarian or non-vegetarian** places? (or say “either” "
+                    "for a mix).")
+
+        # Fixed / medical meal timing -- asked once, after diet is settled.
+        if wants_meals and not _norm_meal_times(a.get("meal_times")) \
+                and not _already_asked(messages, _Q_MEALTIME):
+            return ("One last thing — do you need any meal at a **specific time** "
+                    "(for example, medication taken with food), or should I just fit "
+                    "them in naturally as we go? If there's a fixed time, tell me "
+                    "which meal and when.")
+        return None   # this plan call has everything it needs
+    return None
 
 
 def _now_min(simulated_now: Optional[str]) -> int:
@@ -179,23 +278,30 @@ def plan(req: PlanRequest):
         "home_lng":        req.lng,
         "day":             day_name,
         "weekday_index":   _weekday_index(day_name),
+        "trip_date":       _resolve_trip_date(req.day),
         "trip_start":      req.trip_start,
         "trip_end":        req.trip_end,
         "requested_meals": _norm_meals(req.meals),
-        "diet":            req.diet,
+        "diet":            _norm_diet(req.diet),
         "meal_times":      _norm_meal_times(req.meal_times),
         "specific_food_place": req.food_place,
+        "start_place":     req.start_place,
+        "end_place":       req.end_place,
+        "exclude_ids":     resolve_place_ids(req.exclude_places),
+        "include_places":  req.include_places or [],
     }
     result   = orchestrator.invoke(state)
     trip_id  = trip_store.create(result)
     stops    = result["stops"]
-    coords   = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in stops]
+    home0    = [result.get("home_lat", req.lat), result.get("home_lng", req.lng)]
+    coords   = [home0] + [[s["lat"], s["lng"]] for s in stops]
     return {
         "trip_id":               trip_id,
         "stops":                 stops,
         "skipped":               result["skipped"],
         "coords":                coords,
         "meal_suggestions":      result.get("meal_suggestions", {}),
+        "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
     }
 
@@ -228,7 +334,53 @@ def trip_meals(trip_id: str, req: TripMealsRequest):
         "skipped":               result["skipped"],
         "coords":                coords,
         "meal_suggestions":      result.get("meal_suggestions", {}),
+        "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
+    }
+
+# ── /api/trip/{id}/remove  (edit: drop a stop the user doesn't want) ─────────
+
+@app.post("/api/trip/{trip_id}/remove")
+def trip_remove(trip_id: str, req: TripRemoveRequest):
+    """User tapped ✕ on a stop. Drops it and re-plans. A removed MEAL just
+    un-picks that restaurant (the sightseeing route is untouched). A removed
+    sightseeing stop / destination is excluded and the day re-optimises around
+    what's left, keeping any chosen meals."""
+    state = trip_store.get(trip_id)
+    if state is None:
+        raise HTTPException(404, f"No trip found with id {trip_id}")
+
+    remove_id = str(req.id)
+    state["mode"] = "plan"
+
+    selections = dict(state.get("meal_selections") or {})
+    meal_of_removed = next((m for m, pid in selections.items() if pid == remove_id), None)
+
+    if meal_of_removed is not None:
+        # Un-pick this meal; keep the locked sightseeing route as-is.
+        selections.pop(meal_of_removed, None)
+        state["meal_selections"] = selections
+        state["reuse_base"] = True
+    else:
+        # A sightseeing stop or the end destination: exclude it and re-solve.
+        state["exclude_ids"] = sorted(set(state.get("exclude_ids", []) or []) | {remove_id})
+        if state.get("end_place_id") == remove_id:
+            state["end_place"] = None
+            state["end_place_id"] = None
+        state["reuse_base"] = False
+
+    result = orchestrator.invoke(state)
+    trip_store.save(trip_id, result)
+    home0  = [result.get("home_lat"), result.get("home_lng")]
+    coords = [home0] + [[s["lat"], s["lng"]] for s in result["stops"]]
+    return {
+        "trip_id":               trip_id,
+        "stops":                 result["stops"],
+        "skipped":               result["skipped"],
+        "coords":                coords,
+        "meal_suggestions":      result.get("meal_suggestions", {}),
+        "trip_date":             result.get("trip_date"),
+        "used_distance_fallback": result.get("used_distance_fallback", False),
     }
 
 # ── /api/trip/{id}/check and /replan ─────────────────────────────────────────
@@ -341,7 +493,14 @@ def weather(req: WeatherRequest):
         out["error"]  = f"Couldn't reach the weather service: {e}"
 
     if req.stops:
-        rows, failed, error = conditions_for_stops(req.stops, datetime.now())
+        # Pin the per-stop forecast to the trip's day (falls back to today).
+        ref_day = datetime.now()
+        if req.date:
+            try:
+                ref_day = datetime.fromisoformat(req.date)
+            except ValueError:
+                pass
+        rows, failed, error = conditions_for_stops(req.stops, ref_day)
         out["stops"]        = rows
         out["needs_replan"] = any(r["is_warning"] for r in rows)
         if failed:
@@ -354,96 +513,76 @@ def weather(req: WeatherRequest):
 def _build_system_prompt() -> str:
     """Dynamic -- called fresh per request so the model always has the real current time."""
     now = datetime.now()
-    return f"""You are Tripy, a friendly trip-planning assistant for Trivandrum, Kerala.
+    import datetime as _dt
+    today    = now.strftime('%Y-%m-%d')
+    tomorrow = (now + _dt.timedelta(days=1)).strftime('%Y-%m-%d')
+    dayafter = (now + _dt.timedelta(days=2)).strftime('%Y-%m-%d')
+    now_time = now.strftime('%I:%M %p')
+    return f"""You are Tripy, a sharp, friendly trip planner for Trivandrum, Kerala.
+CURRENT DATE & TIME: {now.strftime('%A, %d %B %Y')} at {now_time} (IST).
 
-CURRENT DATE AND TIME: {now.strftime('%A, %d %B %Y at %I:%M %p')} (IST)
+Be AGENTIC. Read the ENTIRE conversation, extract every detail the user has
+already given, and act on it. Do NOT re-ask for anything they've stated, even
+once, even in passing. Prefer doing over interrogating.
 
-━━ HOW YOU GATHER DETAILS — ASK ONE THING AT A TIME ━━
-Collect what you need STEP BY STEP. Ask EXACTLY ONE question per message, then
-STOP and WAIT for the user's reply before the next step. NEVER bundle two
-questions into one message. NEVER call plan_my_day until every step is done.
-Work through the steps in order, skipping any that are already answered.
+━━ TO PLAN OR RE-PLAN: call plan_my_day ━━
+Fill as many parameters as you can from what the user said:
+ • query        — their interests / what they want to see.
+ • trip_start, trip_end — "HH:MM" 24h.
+ • date         — if they named any day/date (see DATES). Naming "tomorrow"
+                  COUNTS as giving the day — do not question the timing then.
+ • start_place  — where the trip begins ("from Azhimala", "starting at Kovalam").
+ • end_place    — where the day must end ("to Napier Museum", "ending at Kovalam").
+                  "from A to B" ⇒ start_place=A AND end_place=B. Use these fields,
+                  never bury a start/end inside `query`.
+ • meals        — any of ["breakfast","lunch","dinner"] they want ([] if none).
+ • diet         — "veg" or "nonveg".
+ • meal_times   — only a meal with a FIXED clock time (e.g. medication), HH:MM.
+ • food_place   — a restaurant they named to include.
+ • exclude_places — names of places to leave out ("remove X", "no X", "skip X").
+ • include_places — landmarks the user insists on ("include Kuthira Malika and
+                  Azhimala temple"). Force-included as must-visit stops. Not for
+                  restaurants (food_place) or the start/end (start_place/end_place).
 
-STEP 1 — Timing. Compare the requested window to the current time above:
-  • Whole window is still in the future → say nothing about time; go to STEP 2.
-  • Start has already passed but the end is still ahead (e.g. they said 9am-6pm
-    and it's now {now.strftime('%I:%M %p')}) → ask ONLY this, then STOP and wait:
-      "It's already {now.strftime('%I:%M %p')}. Want me to plan from now until
-       your end time, or schedule this trip for another day?"
-    - If they say continue / from now → use the CURRENT time as trip_start, then
-      go to STEP 2.
-    - If they choose another day → do NOT guess the day. Ask ONLY this, then STOP
-      and wait: "Sure — which day? Tomorrow, the day after, or a specific date?"
-      When they answer, resolve it to a `date` (see DATE RESOLUTION), keep their
-      original start time, then go to STEP 2.
-  • Whole window has already passed → ask ONLY: "That time's already gone for
-    today — which day would you like instead? Tomorrow, the day after, or a
-    specific date?" STOP and wait, then resolve their answer to a `date`.
+━━ ASK ONLY FOR WHAT'S GENUINELY MISSING ━━
+One short question at a time, and ONLY for these truly-required items:
+ 1. Interests — only if you have no idea what they want to see.
+ 2. Time window — only if there's no start & end time at all anywhere in the chat.
+ 3. Timing conflict — ONLY when the start time is TODAY and has ALREADY passed
+    (it's {now_time} now) AND they did NOT name another day/date. Then ask once:
+    "It's already {now_time}. Plan from now to your end time, or another day?"
+    If they already said tomorrow / a date / a future day, DO NOT ask this.
+ 4. Diet — ONLY if they asked for a meal but didn't say veg/non-veg.
+Nothing else needs a question — sensible defaults cover the rest. Once the
+required items are known, CALL plan_my_day immediately. Never ask "shall I plan?".
 
-STEP 2 — Meals. First work out which meals are even POSSIBLE for the trip window,
-  and offer ONLY those — never offer a meal that can't fit:
-    - breakfast only if the trip starts at or before ~09:30,
-    - lunch only if the window covers roughly 12:30–14:00,
-    - supper only if the trip runs to ~19:00 or later.
-  (So a trip from noon → don't offer breakfast; a trip ending at 5pm → don't
-  offer supper.) Then ask ONLY this, listing just the possible meals, and STOP
-  and wait:
-   "Before I plan — want me to include any meals ({{possible meals}})? Or none?"
+━━ EDITS ARE RE-PLANS ━━
+When the user changes an existing trip ("start from Azhimala instead", "remove
+the museum", "add a beach", "make it end at Kovalam", "swap in temples"), call
+plan_my_day AGAIN and RE-PASS EVERYTHING from before (query, times, date, meals,
+diet, start/end) PLUS the change. Never drop details the user gave earlier.
+For removals, put the place name in exclude_places (typos are fine — the backend
+matches fuzzily) and keep any earlier exclusions too.
 
-STEP 3 — Diet (SKIP this step entirely if they wanted no meals). Ask ONLY this,
-  then STOP and wait:
-   "Great — and are you vegetarian or non-vegetarian?"
+━━ DATES ━━ Resolve any named day/date to YYYY-MM-DD in `date`:
+ today={today}, tomorrow={tomorrow}, day after tomorrow={dayafter}.
+ "the 14th" → {now.strftime('%Y-%m')}-14 (next month if already past). The backend
+ derives the weekday from `date`, so you don't also pass `day`.
 
-STEP 4 — Meal timing (SKIP if they wanted no meals). Ask ONLY this, then STOP
-  and wait:
-   "One more thing — do you need any meal at a specific time (for example, if you
-    take medication with food), or should I just fit them in naturally as we go?"
-  - If they give specific times, pass them in `meal_times` as HH:MM, e.g.
-    {{"lunch": "13:00"}}.
-  - If they say no / it's flexible, omit meal_times.
+━━ AFTER A PLAN ━━ The itinerary, skip reasons, and (if meals were requested)
+restaurant cards render automatically below your message. In 1–2 warm lines,
+summarise the day and briefly say what each main stop is, using its real
+`insight` text (never invent facts). If meals were requested, add one line:
+they can tap "Add" on a card — or "Let Tripy choose". Don't list restaurant
+names yourself. **Bold** place names. Never mention internal field names.
 
-STEP 5 — Plan. Only now call plan_my_day, passing everything you've gathered:
-  query, trip_start, trip_end, date (if any), meals (array; [] if none), diet,
-  meal_times (only for meals with a fixed time), and food_place if the user named
-  a specific restaurant.
-
-━━ DATE RESOLUTION ━━
-If the user mentions any specific date, resolve it to YYYY-MM-DD and pass it
-as the `date` parameter. Examples:
-- "the 14th" or "14th" → assume CURRENT month and year → {now.strftime('%Y-%m')}-14
-  (if that date is already past this month, use next month instead)
-- "June 14" → {now.year}-06-14
-- "next Friday" → compute from today ({now.strftime('%A %d %B')})
-- "today" → {now.strftime('%Y-%m-%d')}
-- "tomorrow" → {(datetime.now() + __import__('datetime').timedelta(days=1)).strftime('%Y-%m-%d')}
-- "day after tomorrow" → {(datetime.now() + __import__('datetime').timedelta(days=2)).strftime('%Y-%m-%d')}
-The backend extracts the correct weekday from this date automatically, so you
-don't also need to pass `day` when `date` is provided.
-
-━━ AFTER THE PLAN — MEAL SUGGESTIONS ━━
-If meals were requested, the per-meal restaurant suggestions appear as cards
-below your message. Tell the user, in one line, that they can tap "Add" on one
-card per meal — or tap "Let Tripy choose" to have a good one picked for them. Do
-NOT list the restaurant names yourself; the cards already show them with ratings
-and reviews.
-
-━━ CONVERSATION MEMORY ━━
-You have the full conversation history. Never re-ask for something already given.
-If the user has described their interests and time window earlier in the chat,
-carry that forward -- don't start from scratch on each message.
-
-━━ AFTER THE PLAN COMES BACK ━━
-The exact timing cards and skip-reason cards are already shown in the UI.
-Your reply should cover the part cards can't:
-  - Brief warm overview (1-2 lines).
-  - Per stop: what the place IS and why it fits what they asked for, drawing
-    from its `insight` field (real visitor-review material, not invented).
-  - Skipped places: brief sentence on what kind they were and roughly why.
-  - If travel times are estimated, mention it once.
-
-NEVER mention internal field names (used_distance_fallback, skipped_reason,
-JSON keys, etc.) -- plain English only.
-FORMATTING: **bold** place names, bullet lists are fine. Warm and conversational.
+CONSEQUENCES OF AN EDIT: if a place the user specifically asked to INCLUDE ended
+up in the skipped list (couldn't fit — closed at that time, or too far to fit the
+window), do NOT stay silent. Say plainly that you couldn't fit it and why, and
+offer a concrete choice, e.g. "I couldn't fit **X** — its hours don't overlap
+your window. Want to extend your end time, or drop one of the other stops to make
+room?" Same when adding something clearly squeezed the day. Be the agent that
+flags trade-offs and offers options, not one that quietly drops things.
 """
 
 
@@ -460,15 +599,67 @@ PLAN_TOOL = {
                 "trip_end":   {"type": "string",  "description": "End time HH:MM (24h)."},
                 "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
                 "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th', 'tomorrow', or 'day after tomorrow'. The backend resolves the correct weekday from this."},
-                "meals":      {"type": "array", "items": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "supper"]}, "description": "Which meals to weave into the day. Empty if the user wants no food stops. 'supper' is treated as dinner."},
-                "diet":       {"type": "string", "enum": ["veg", "nonveg"], "description": "Dietary preference, used to pick restaurants. Only needed if at least one meal is requested."},
+                "meals":      {"type": "array", "items": {"type": "string"}, "description": "Which meals to weave into the day, each one of: breakfast, lunch, dinner (supper = dinner). Empty array if the user wants no food stops."},
+                "diet":       {"type": "string", "description": "Dietary preference, either 'veg' or 'nonveg'. Only when a meal is requested AND the user stated it. Omit the field entirely if unknown — do NOT pass an empty string."},
                 "meal_times": {"type": "object", "properties": {"breakfast": {"type": "string"}, "lunch": {"type": "string"}, "dinner": {"type": "string"}}, "description": "ONLY if the user must eat a meal at a specific clock time (e.g. for medication). Map that meal to HH:MM 24h, e.g. {\"lunch\": \"13:00\"}. Omit meals whose timing is flexible."},
                 "food_place": {"type": "string", "description": "A specific restaurant the user explicitly asked to include by name (e.g. 'Villa Maya'). Force-included even if it's a small detour. Omit otherwise."},
+                "start_place": {"type": "string", "description": "Where the trip STARTS, if the user names a place (e.g. 'from Vizhinjam', 'starting at Kovalam'). The whole route is built outward from here instead of the user's GPS location. Omit if they didn't say."},
+                "end_place":   {"type": "string", "description": "Where the trip must END, if the user names a destination (e.g. 'to Napier Museum', 'ending at Kovalam beach'). This place is guaranteed to be the final stop of the day. Omit if they didn't say."},
+                "exclude_places": {"type": "array", "items": {"type": "string"}, "description": "Names of places the user wants LEFT OUT of the plan (e.g. they said 'remove the museum', 'no Kuthira Malika', 'skip temples'). Pass the place names as spoken; the backend matches them even with typos. Carry earlier exclusions forward on re-plans."},
+                "include_places": {"type": "array", "items": {"type": "string"}, "description": "Specific landmarks the user wants GUARANTEED in the plan (e.g. 'include Kuthira Malika and Azhimala temple', 'make sure to add the zoo'). These are force-included as must-visit stops. Names as spoken; typos are matched. Not for restaurants (use food_place) or the start/end (use start_place/end_place)."},
             },
             "required": ["query", "trip_start", "trip_end"],
         },
     },
 }
+
+
+def _recover_tool_calls(err) -> list:
+    """Groq strict-validates tool calls and 400s the ENTIRE request if the model
+    produces one that doesn't fit the schema (drops a required field, or emits an
+    empty string for an enum). The rejected response still carries the model's
+    intended call in `failed_generation` -- parse it so one sloppy generation
+    degrades into a best-effort plan (bad/missing fields get normalised or
+    defaulted downstream) instead of crashing the chat with a raw 400.
+
+    Handles the two shapes different Groq models use for failed_generation:
+      A) JSON: [{"name": ..., "parameters": {...}}]  (e.g. llama-4)
+      B) llama tool syntax: <function=NAME>{...}</function>
+
+    Returns a normalised [{id, name, arguments(str)}] list, or [] if nothing
+    usable can be recovered (caller then surfaces the original error)."""
+    body = getattr(err, "body", None)
+    fg = (body or {}).get("error", {}).get("failed_generation") if isinstance(body, dict) else None
+    if not fg or not str(fg).strip():
+        return []
+    fg = str(fg).strip()
+
+    # Shape A -- a JSON array/object of {name, parameters}.
+    try:
+        parsed = json.loads(fg)
+        items = parsed if isinstance(parsed, list) else [parsed]
+        calls = []
+        for i, c in enumerate(items):
+            if isinstance(c, dict) and (c.get("name") or c.get("parameters") or c.get("arguments")):
+                params = c.get("parameters") or c.get("arguments") or {}
+                calls.append({"id": f"recovered_{i}", "name": c.get("name", "plan_my_day"),
+                              "arguments": json.dumps(params)})
+        if calls:
+            return calls
+    except Exception:
+        pass
+
+    # Shape B -- <function=NAME>{...json...}</function>  (one or more).
+    import re
+    calls = []
+    for i, m in enumerate(re.finditer(r"<function=([^>]+)>(.*?)(?:</function>|$)", fg, re.DOTALL)):
+        name, payload = m.group(1).strip(), m.group(2).strip()
+        try:
+            params = json.loads(payload)
+        except Exception:
+            continue
+        calls.append({"id": f"recovered_{i}", "name": name, "arguments": json.dumps(params)})
+    return calls
 
 
 @app.post("/api/chat")
@@ -479,6 +670,7 @@ async def chat(req: ChatRequest):
     messages = [{"role": "system", "content": _build_system_prompt()}]
     messages += [{"role": m.role, "content": m.content} for m in req.messages]
 
+    assistant_content = None
     try:
         first = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -487,29 +679,45 @@ async def chat(req: ChatRequest):
             tool_choice="auto",
             temperature=0.3,
         )
+        msg   = first.choices[0].message
+        calls = [{"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
+                 for tc in (msg.tool_calls or [])]
+        assistant_content = msg.content
     except Exception as e:
-        raise HTTPException(502, f"Groq request failed: {e}")
+        # A schema-rejected tool call (tool_use_failed) is recoverable -- don't
+        # crash the chat over one malformed generation.
+        calls = _recover_tool_calls(e)
+        if not calls:
+            raise HTTPException(502, f"Groq request failed: {e}")
 
-    msg        = first.choices[0].message
-    tool_calls = msg.tool_calls or []
+    # ── Essential-info gate ─────────────────────────────────────────────────
+    # Be a real agent: if the model tries to plan while an ESSENTIAL detail is
+    # still unknown, ask the user for it instead of planning with a blank (that
+    # blank diet is exactly what broke before). This is deterministic -- it does
+    # not depend on the model choosing to ask -- and each thing is asked at most
+    # once (we check the history), so the user is never nagged for what they've
+    # already answered.
+    gate = _essential_info_question(calls, req.messages)
+    if gate:
+        return {"reply": gate}
 
     # Build the assistant message explicitly -- model_dump(exclude_none=True)
     # silently drops 'content' when it's None, which makes Groq reject the
     # next request and causes the chat to hang silently.
-    assistant_msg = {"role": "assistant", "content": msg.content}
-    if tool_calls:
+    assistant_msg = {"role": "assistant", "content": assistant_content}
+    if calls:
         assistant_msg["tool_calls"] = [
-            {"id": tc.id, "type": "function",
-             "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-            for tc in tool_calls
+            {"id": c["id"], "type": "function",
+             "function": {"name": c["name"], "arguments": c["arguments"]}}
+            for c in calls
         ]
     messages.append(assistant_msg)
 
     structured_plan = None  # last successful plan -> streamed to the UI as a trailer
 
-    for tc in tool_calls:
+    for c in calls:
         try:
-            args = json.loads(tc.function.arguments)
+            args = json.loads(c["arguments"])
 
             # Resolve weekday from `date` (YYYY-MM-DD) if given, else from `day` name.
             # `date` takes priority because it's unambiguous -- the model passes it
@@ -527,27 +735,35 @@ async def chat(req: ChatRequest):
 
             state: TripState = {
                 "mode":            "plan",
-                "query":           args["query"],
+                "query":           args.get("query") or "",
                 "home_lat":        req.lat,
                 "home_lng":        req.lng,
                 "day":             day_name,
                 "weekday_index":   _weekday_index(day_name),
+                "trip_date":       _resolve_trip_date(args.get("day"), args.get("date")),
                 "trip_start":      args.get("trip_start", "09:00"),
                 "trip_end":        args.get("trip_end",   "18:00"),
                 "requested_meals": _norm_meals(args.get("meals")),
-                "diet":            args.get("diet"),
+                "diet":            _norm_diet(args.get("diet")),
                 "meal_times":      _norm_meal_times(args.get("meal_times")),
                 "specific_food_place": args.get("food_place"),
+                "start_place":     args.get("start_place"),
+                "end_place":       args.get("end_place"),
+                "exclude_ids":     resolve_place_ids(args.get("exclude_places")),
+                "include_places":  args.get("include_places") or [],
             }
             plan_result  = orchestrator.invoke(state)
             trip_id      = trip_store.create(plan_result)
-            coords       = [[req.lat, req.lng]] + [[s["lat"], s["lng"]] for s in plan_result["stops"]]
+            # Route starts from the resolved home (a named start_place overrides GPS).
+            home0        = [plan_result.get("home_lat", req.lat), plan_result.get("home_lng", req.lng)]
+            coords       = [home0] + [[s["lat"], s["lng"]] for s in plan_result["stops"]]
             structured_plan = {
                 "trip_id":               trip_id,
                 "stops":                 plan_result["stops"],
                 "skipped":               plan_result["skipped"],
                 "coords":                coords,
                 "meal_suggestions":      plan_result.get("meal_suggestions", {}),
+                "trip_date":             plan_result.get("trip_date"),
                 "used_distance_fallback": plan_result["used_distance_fallback"],
             }
             tool_content = json.dumps({
@@ -562,8 +778,8 @@ async def chat(req: ChatRequest):
 
         messages.append({
             "role":         "tool",
-            "tool_call_id": tc.id,
-            "name":         tc.function.name,
+            "tool_call_id": c["id"],
+            "name":         c["name"],
             "content":      tool_content,
         })
 
@@ -583,7 +799,7 @@ async def chat(req: ChatRequest):
         if structured_plan is not None:
             yield "\n" + PLAN_TRAILER + json.dumps(structured_plan)
 
-    if tool_calls:
+    if calls:
         return StreamingResponse(stream_gen(), media_type="text/plain")
 
-    return {"reply": msg.content or ""}
+    return {"reply": assistant_content or ""}
