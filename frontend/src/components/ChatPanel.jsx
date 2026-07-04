@@ -159,9 +159,15 @@ function bestPick(list) {
 
 function MealSuggestions({ suggestions, selections, onAdd, busy }) {
   const meals = MEAL_ORDER.filter(m => suggestions?.[m]?.length)
-  if (!meals.length) return null
+  const empty = MEAL_ORDER.filter(m => Array.isArray(suggestions?.[m]) && !suggestions[m].length)
+  if (!meals.length && !empty.length) return null
   return (
     <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%' }}>
+      {empty.map(meal => (
+        <div key={meal} style={{ fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px dashed #fbbf24', borderRadius: '8px', padding: '8px 11px', marginBottom: '8px' }}>
+          No {MEAL_TITLES[meal].toLowerCase()} spots fit this trip — it ends before {MEAL_TITLES[meal].toLowerCase()} time. Extend the end time, or give an earlier {MEAL_TITLES[meal].toLowerCase()} time (e.g. "{MEAL_TITLES[meal].toLowerCase()} at 17:30").
+        </div>
+      ))}
       {meals.map(meal => {
         const list   = suggestions[meal]
         const picked = selections?.[meal]
