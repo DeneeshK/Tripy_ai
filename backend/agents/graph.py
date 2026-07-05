@@ -41,6 +41,7 @@ from engine.meals import (
     resolve_meal_window, insert_meals_into_route,
 )
 from engine.hours import resolve_for_day, best_window_in_span
+from engine.distance_matrix import time_matrix_with_fallback, haversine_km
 
 
 def _weekday_index(day_name) -> int:
@@ -98,6 +99,25 @@ def _build_meal_specs(selections, meal_times, food_by_id, weekday_index, ts_min,
         dur = min(int(round(float(p.get("avg_duration", 1.0)) * 60)), MEAL_DURATION_CAP_MIN)
         specs.append({"place": p, "meal": meal, "anchor": win["anchor"], "duration_min": dur})
     return specs, skipped
+
+
+def _annotate_travel_legs(home, stops):
+    """Attach the travel time (and rough distance) from the previous location to
+    each stop, so the UI can draw a 'X min drive' connector between the itinerary
+    cards. The first stop's 'previous' is the day's start (home / named start).
+    One extra OSRM Table call over the FINAL ordered route (meals included), so
+    the numbers match the map the user sees."""
+    if not stops:
+        return stops
+    points = [home] + [(s["lat"], s["lng"]) for s in stops]
+    matrix, _used = time_matrix_with_fallback(points)
+    for i, s in enumerate(stops):
+        leg = matrix[i][i + 1]
+        s["travel_from_prev_min"] = (
+            None if leg is None or leg == float("inf") else int(round(leg))
+        )
+        s["travel_from_prev_km"] = round(haversine_km(points[i], points[i + 1]), 1)
+    return stops
 
 
 def plan_trip_node(state: TripState) -> TripState:
@@ -179,6 +199,7 @@ def plan_trip_node(state: TripState) -> TripState:
     else:
         final_stops = base_stops
 
+    final_stops = _annotate_travel_legs(home, final_stops)
     state["stops"] = final_stops
     state["skipped"] = list(base_skipped) + meal_skipped
     state["requested_meals"] = requested_meals

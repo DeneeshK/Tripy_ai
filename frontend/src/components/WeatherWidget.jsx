@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { RefreshCw } from 'lucide-react'
 
 const API = ''
 const POLL_MS = 20 * 60 * 1000  // refresh current conditions every 20 min
@@ -33,7 +34,7 @@ function dayLabel(dateStr) {
   return wd
 }
 
-export default function WeatherWidget({ userLocation, stops = [], tripDate, onReplan, replanLoading }) {
+export default function WeatherWidget({ userLocation, stops = [], tripDate, onReplan, replanLoading, onData }) {
   const [data, setData]         = useState(null)
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading]   = useState(false)
@@ -53,10 +54,14 @@ export default function WeatherWidget({ userLocation, stops = [], tripDate, onRe
           stops: (stops || []).map(s => ({ name: s.name, lat: s.lat, lng: s.lng, arrive_at: s.arrive_at })),
         }),
       })
-      if (res.ok) setData(await res.json())
+      if (res.ok) {
+        const json = await res.json()
+        setData(json)
+        onData?.(json)   // share the per-stop forecast with the map
+      }
     } catch { /* keep last reading on transient failure */ }
     finally { setLoading(false) }
-  }, [userLocation, stops, tripDate])
+  }, [userLocation, stops, tripDate, onData])
 
   // Refetch when location, the planned stops, or the trip day change, then poll.
   useEffect(() => {
@@ -106,6 +111,7 @@ export default function WeatherWidget({ userLocation, stops = [], tripDate, onRe
       width: '100%', marginTop: '10px', background: '#2563eb', color: '#fff',
       border: 'none', borderRadius: '9px', padding: '9px', cursor: 'pointer',
       fontWeight: 700, fontSize: '12.5px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
     },
   }
 
@@ -168,7 +174,8 @@ export default function WeatherWidget({ userLocation, stops = [], tripDate, onRe
 
           {needsReplan && onReplan && (
             <button style={S.replanBtn} onClick={onReplan} disabled={replanLoading}>
-              {replanLoading ? '…replanning' : '🔄 Rain expected — replan for indoor spots'}
+              <RefreshCw size={14} />
+              {replanLoading ? 'Replanning…' : 'Rain expected — replan indoors'}
             </button>
           )}
         </div>

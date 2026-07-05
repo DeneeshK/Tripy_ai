@@ -217,6 +217,7 @@ def insert_meals_into_route(home, base_stops, meal_specs, trip_start_min,
                 "visit_ends": _hhmm(depart), "avg_duration_hrs": it["dur"] / 60,
                 "relevance": 1.0, "is_meal": True, "meal": it["meal"],
                 "vibe": p.get("vibe", ""), "insight": p.get("insight", ""),
+                "summary": p.get("summary", ""),
                 "rating": p.get("rating", 0.0), "status": "", "availability_note": "",
                 "timing_reason": f"{MEAL_LABELS[it['meal']]} — fitted in around {_hhmm(arrive)} "
                                  f"between your stops, without changing the rest of the plan.",

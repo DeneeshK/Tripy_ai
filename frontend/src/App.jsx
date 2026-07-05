@@ -2,6 +2,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import TripMap from './components/TripMap'
 import ChatPanel from './components/ChatPanel'
 import WeatherWidget from './components/WeatherWidget'
+import SavedTripsModal from './components/SavedTripsModal'
+import { FullPlanModal } from './components/Itinerary'
+import { loadTrips, saveTrip, deleteTrip } from './lib/tripStore'
+import { RefreshCw, Bookmark } from 'lucide-react'
 
 const API = ''
 const POLL_INTERVAL_MS = 30 * 60 * 1000  // 30 minutes
@@ -17,7 +21,63 @@ export default function App() {
   const [replanLoading, setReplanLoading] = useState(false)
   const [weatherDismissed, setWeatherDismissed] = useState(false)
   const [mapConfig, setMapConfig] = useState({ owm_api_key: '', stadia_api_key: '' })
+  const [chatOpen, setChatOpen]   = useState(true)
+  const [chatWidth, setChatWidth] = useState(380)
+  const [resizing, setResizing]   = useState(false)
+  const [gpsDismissed, setGpsDismissed] = useState(false)
+  const [weatherData, setWeatherData] = useState(null)   // shared per-stop forecast (widget -> map)
+  // Saved trips (opened from a button, not a separate home screen).
+  const [savedOpen, setSavedOpen] = useState(false)      // saved-trips overlay open
+  const [savedTrips, setSavedTrips] = useState(() => loadTrips())
+  const [openTrip, setOpenTrip]   = useState(null)       // saved trip open in the viewer modal
+  const [initialTrip, setInitialTrip] = useState(null)   // seed the planner with this trip
   const pollRef = useRef(null)
+  const resizingRef = useRef(false)
+
+  const handleSaveTrip   = useCallback((trip) => setSavedTrips(saveTrip(trip)), [])
+  const handleDeleteTrip = useCallback((id) => {
+    setSavedTrips(deleteTrip(id))
+    setOpenTrip(t => (t && t.id === id ? null : t))
+  }, [])
+
+  const CHAT_MIN = 320
+  const CHAT_LEFT = 16               // matches styles.left `left`
+  const isWide = chatWidth >= 560
+
+  // Drag the right edge of the chat panel to resize it; toggle button snaps
+  // between the default width and a wide reading width.
+  const startResize = useCallback((e) => {
+    e.preventDefault()
+    resizingRef.current = true
+    setResizing(true)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [])
+
+  const toggleWide = useCallback(() => {
+    setChatWidth(w => (w >= 560 ? 380 : Math.min(760, Math.round(window.innerWidth * 0.5))))
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!resizingRef.current) return
+      const max = Math.min(window.innerWidth - 120, 900)
+      setChatWidth(Math.max(CHAT_MIN, Math.min(max, e.clientX - CHAT_LEFT)))
+    }
+    const onUp = () => {
+      if (!resizingRef.current) return
+      resizingRef.current = false
+      setResizing(false)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   // Fetch map API keys from backend once on load
   useEffect(() => {
@@ -130,9 +190,25 @@ export default function App() {
   const styles = {
     root: { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' },
     left: {
-      position: 'absolute', top: '16px', left: '16px', bottom: '16px', width: '380px',
-      display: 'flex', flexDirection: 'column', overflow: 'hidden', zIndex: 500,
+      position: 'absolute', top: '16px', left: '16px', bottom: '16px', width: `${chatWidth}px`,
+      display: 'flex', flexDirection: 'column', zIndex: 500,
       borderRadius: '16px', boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
+    },
+    resizeHandle: {
+      position: 'absolute', top: 0, right: '-5px', width: '12px', height: '100%',
+      cursor: 'col-resize', zIndex: 600,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    },
+    resizeGrip: {
+      width: '4px', height: '46px', borderRadius: '3px',
+      background: 'rgba(255,255,255,0.65)', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+    },
+    chatFab: {
+      position: 'absolute', left: '20px', bottom: '20px', zIndex: 1200,
+      width: '58px', height: '58px', borderRadius: '50%', border: 'none',
+      background: '#2563eb', color: '#fff', cursor: 'pointer', fontSize: '24px',
+      boxShadow: '0 8px 24px rgba(37,99,235,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
     },
     right: { position: 'absolute', inset: 0 },
 
@@ -188,20 +264,54 @@ export default function App() {
       top: showWarning ? `${14 + 52 + weatherWarnings.length * 68 + 52}px` : '12px',
       left: '50%', transform: 'translateX(-50%)',
       zIndex: 1000,
-      background: gpsStatus === 'denied' ? '#fef3c7' : '#d1fae5',
-      color: gpsStatus === 'denied' ? '#92400e' : '#065f46',
-      padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
-      pointerEvents: 'none', boxShadow: '0 2px 8px rgba(0,0,0,.15)',
-      display: gpsStatus === 'ok' ? 'none' : 'block',
+      background: '#fff', color: '#374151',
+      padding: '8px 10px 8px 14px', borderRadius: '12px', fontSize: '12.5px', fontWeight: 600,
+      boxShadow: '0 4px 18px rgba(0,0,0,0.16)', border: '1px solid #e5e7eb',
+      display: 'flex', alignItems: 'center', gap: '10px', maxWidth: '90vw',
       transition: 'top 0.2s',
+    },
+    gpsClose: {
+      background: '#f3f4f6', border: 'none', borderRadius: '50%',
+      width: '20px', height: '20px', cursor: 'pointer', color: '#6b7280', fontSize: '13px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1,
+    },
+    savedFab: {
+      position: 'absolute', bottom: '22px', left: '50%', transform: 'translateX(-50%)',
+      zIndex: 1100, display: 'flex', alignItems: 'center', gap: '8px',
+      background: '#111827', color: '#fff', border: 'none', borderRadius: '24px',
+      padding: '11px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 700,
+      boxShadow: '0 8px 26px rgba(0,0,0,0.35)',
     },
   }
 
+  // Per-stop forecast keyed by stop name, for the little weather badges on the map pins.
+  const stopWeather = {}
+  for (const r of weatherData?.stops || []) stopWeather[r.stop_name] = r
+
   return (
     <div style={styles.root}>
-      <div style={styles.left}>
-        <ChatPanel userLocation={userLocation} onPlanReady={onPlanReady} />
-      </div>
+      {chatOpen && (
+        <div style={styles.left}>
+          <ChatPanel
+            userLocation={userLocation}
+            onPlanReady={onPlanReady}
+            onSaveTrip={handleSaveTrip}
+            initialTrip={initialTrip}
+            onCollapse={() => setChatOpen(false)}
+            onToggleWide={toggleWide}
+            isWide={isWide}
+          />
+          <div style={styles.resizeHandle} onMouseDown={startResize} title="Drag to resize">
+            <div style={styles.resizeGrip} />
+          </div>
+        </div>
+      )}
+      {!chatOpen && (
+        <button style={styles.chatFab} onClick={() => setChatOpen(true)} title="Open chat">💬</button>
+      )}
+      {resizing && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 2000, cursor: 'col-resize' }} />
+      )}
       <div style={styles.right}>
 
         <WeatherWidget
@@ -210,6 +320,7 @@ export default function App() {
           tripDate={tripDate}
           onReplan={handleReplan}
           replanLoading={replanLoading}
+          onData={setWeatherData}
         />
 
         {showWarning && (
@@ -241,7 +352,8 @@ export default function App() {
 
             <div style={styles.actions}>
               <button onClick={handleReplan} disabled={replanLoading} style={styles.replanBtn}>
-                {replanLoading ? '…replanning' : '🔄 Replan for indoor spots'}
+                <RefreshCw size={14} />
+                {replanLoading ? 'Replanning…' : 'Replan for indoor spots'}
               </button>
               <button onClick={() => setWeatherDismissed(true)} style={styles.dismissBtn}>
                 Dismiss
@@ -250,10 +362,15 @@ export default function App() {
           </div>
         )}
 
-        <div style={styles.gpsBadge}>
-          {gpsStatus === 'denied'    && '📍 Using Trivandrum centre — location access was denied'}
-          {gpsStatus === 'requesting' && '📍 Getting your location…'}
-        </div>
+        {gpsStatus !== 'ok' && !gpsDismissed && (
+          <div style={styles.gpsBadge}>
+            <span>
+              {gpsStatus === 'denied'     && '📍 Using Trivandrum centre — location access was denied'}
+              {gpsStatus === 'requesting' && '📍 Getting your location…'}
+            </span>
+            <button style={styles.gpsClose} onClick={() => setGpsDismissed(true)} title="Dismiss">✕</button>
+          </div>
+        )}
 
         <TripMap
           userLocation={userLocation}
@@ -261,8 +378,33 @@ export default function App() {
           route={route}
           stadiaApiKey={mapConfig.stadia_api_key || ''}
           owmApiKey={mapConfig.owm_api_key || ''}
+          stopWeather={stopWeather}
         />
       </div>
+
+      <button style={styles.savedFab} onClick={() => setSavedOpen(true)} title="Your saved plans">
+        <Bookmark size={17} /> Your saved plans
+      </button>
+
+      {savedOpen && (
+        <SavedTripsModal
+          trips={savedTrips}
+          onClose={() => setSavedOpen(false)}
+          onOpen={(t) => setOpenTrip(t)}
+          onDelete={handleDeleteTrip}
+        />
+      )}
+
+      {openTrip && (
+        <FullPlanModal
+          plan={openTrip.plan}
+          name={openTrip.name}
+          editable={false}
+          onClose={() => setOpenTrip(null)}
+          onEditInPlanner={() => { setInitialTrip(openTrip); setOpenTrip(null); setSavedOpen(false); setChatOpen(true) }}
+          onDelete={() => handleDeleteTrip(openTrip.id)}
+        />
+      )}
     </div>
   )
 }

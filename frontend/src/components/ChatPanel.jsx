@@ -1,267 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Send, Loader2, MapPin, Clock, XCircle } from 'lucide-react'
+import { Send, Loader2, Minus, Maximize2, Minimize2 } from 'lucide-react'
+import {
+  TripSummaryCard, FullPlanModal, MealModal,
+  seedSelections, defaultTripName,
+} from './Itinerary'
+import { newTripId } from '../lib/tripStore'
 
 const API = ''  // vite proxy handles /api -> localhost:8000
-
-function StopCard({ stop, index, onRemove, busy }) {
-  const meal = stop.is_meal
-  const dest = stop.is_destination
-  const accent = meal ? '#b45309' : dest ? '#7c3aed' : '#2563eb'
-  const badge  = meal ? '🍽' : dest ? '🏁' : index + 1
-  return (
-    <div style={{
-      background: meal ? '#fffbeb' : '#fff',
-      border: `1.5px solid ${meal ? '#fde68a' : dest ? '#ddd6fe' : '#dbeafe'}`,
-      borderRadius: '10px', padding: '10px 12px 10px 14px', marginBottom: '10px',
-      boxShadow: '0 1px 3px rgba(37,99,235,0.08)',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span style={{
-          background: accent, color: '#fff', borderRadius: '50%',
-          width: '20px', height: '20px', display: 'inline-flex', alignItems: 'center',
-          justifyContent: 'center', fontSize: '11px', fontWeight: 700, flexShrink: 0,
-        }}>{badge}</span>
-        <strong style={{ fontSize: '15px', color: accent, fontWeight: 700, flex: 1 }}>{stop.name}</strong>
-        <span style={{ fontSize: '12px', color: '#6b7280', flexShrink: 0 }}>
-          {stop.visit_starts}–{stop.visit_ends}
-        </span>
-        {onRemove && (
-          <button
-            onClick={onRemove} disabled={busy} title="Remove from plan"
-            style={{
-              background: 'none', border: 'none', cursor: busy ? 'default' : 'pointer',
-              color: '#c4c4c4', padding: '0 0 0 2px', lineHeight: 1, flexShrink: 0,
-              opacity: busy ? 0.4 : 1,
-            }}>
-            <XCircle size={16} />
-          </button>
-        )}
-      </div>
-      {stop.timing_reason && (
-        <div style={{ fontSize: '12.5px', color: '#4b5563', margin: '4px 0 0 28px', lineHeight: '1.4' }}>
-          {stop.timing_reason}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function SkippedCard({ place }) {
-  return (
-    <div style={{
-      background: '#fafafa', borderLeft: '4px solid #d1d5db',
-      borderRadius: '8px', padding: '8px 12px', marginBottom: '6px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
-        <XCircle size={14} color="#9ca3af" style={{ flexShrink: 0 }} />
-        <strong style={{ fontSize: '13px', color: '#4b5563' }}>{place.name}</strong>
-      </div>
-      <div style={{ fontSize: '12px', color: '#9ca3af', paddingLeft: '20px' }}>
-        {place.skipped_reason}
-      </div>
-    </div>
-  )
-}
-
-// Low-priority "why these didn't make the cut" list -- collapsed by default so
-// the itinerary reads cleanly; the curious can expand it.
-function SkippedSection({ skipped }) {
-  const [open, setOpen] = useState(false)
-  if (!skipped?.length) return null
-  return (
-    <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%', marginTop: '-2px' }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
-          fontSize: '11px', fontWeight: 700, color: '#9ca3af',
-          textTransform: 'uppercase', letterSpacing: '0.04em',
-        }}>
-        {open ? '▾' : '▸'} Didn't make the cut ({skipped.length})
-      </button>
-      {open && skipped.map(p => <SkippedCard key={p.id || p.name} place={p} />)}
-    </div>
-  )
-}
-
 const PLAN_TRAILER = '<<<TRIPY_PLAN>>>'  // must match api/main.py PLAN_TRAILER
-const MEAL_TITLES = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Supper' }
-const MEAL_ORDER  = ['breakfast', 'lunch', 'dinner']
-
-// Seed the user's current per-meal selection from the backend's `added` flags.
-function seedSelections(suggestions = {}) {
-  const sel = {}
-  for (const meal of MEAL_ORDER) {
-    const chosen = (suggestions[meal] || []).find(c => c.added)
-    if (chosen) sel[meal] = chosen.id
-  }
-  return sel
-}
-
-const DIET_STYLE = {
-  veg:    { bg: '#dcfce7', fg: '#166534', label: 'Pure veg' },
-  nonveg: { bg: '#fee2e2', fg: '#991b1b', label: 'Non-veg' },
-  both:   { bg: '#fef3c7', fg: '#92400e', label: 'Veg & Non-veg' },
-}
-
-// The stored insight is the full review file; strip the ID/NAME/CATEGORY header
-// and the [RAW_REVIEW_REPOSITORY] marker so only the real review quotes show.
-function cleanInsight(text = '') {
-  const marker = '[RAW_REVIEW_REPOSITORY]'
-  const idx = text.indexOf(marker)
-  return (idx !== -1 ? text.slice(idx + marker.length) : text).trim()
-}
-
-function Stars({ rating }) {
-  if (!rating) return null
-  return (
-    <span style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 700 }}>
-      ★ {Number(rating).toFixed(1)}
-    </span>
-  )
-}
-
-function MealCard({ card, selected, onAdd, busy }) {
-  const [showReview, setShowReview] = useState(false)
-  const ds = DIET_STYLE[card.diet] || DIET_STYLE.both
-  return (
-    <div style={{
-      background: '#fff', border: `1.5px solid ${selected ? '#16a34a' : '#e5e7eb'}`,
-      borderRadius: '10px', padding: '10px 12px', marginBottom: '8px',
-      boxShadow: selected ? '0 0 0 2px #16a34a22' : '0 1px 2px rgba(0,0,0,0.04)',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <strong style={{ fontSize: '14px', color: '#111', flex: 1 }}>{card.name}</strong>
-        <Stars rating={card.rating} />
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '5px 0' }}>
-        <span style={{
-          background: ds.bg, color: ds.fg, fontSize: '10.5px', fontWeight: 700,
-          padding: '2px 7px', borderRadius: '20px',
-        }}>{card.diet_label || ds.label}</span>
-        {card.detour_min != null && (
-          <span style={{ fontSize: '11px', color: '#9ca3af' }}>
-            ~{Math.round(card.detour_min)} min off your route
-          </span>
-        )}
-      </div>
-      {card.diet === 'both' && card.diet_note && (
-        <div style={{ fontSize: '11.5px', color: '#92400e', marginBottom: '4px' }}>{card.diet_note}</div>
-      )}
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-        <button
-          onClick={() => setShowReview(v => !v)}
-          style={{
-            background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer',
-            fontSize: '12px', padding: 0, fontWeight: 600,
-          }}>
-          {showReview ? 'Hide reviews' : 'View reviews'}
-        </button>
-        <button
-          onClick={onAdd} disabled={busy}
-          style={{
-            marginLeft: 'auto',
-            background: selected ? '#16a34a' : '#2563eb', color: '#fff', border: 'none',
-            borderRadius: '8px', padding: '6px 12px', cursor: busy ? 'default' : 'pointer',
-            fontSize: '12.5px', fontWeight: 700, opacity: busy ? 0.6 : 1,
-          }}>
-          {selected ? '✓ Added' : '+ Add to plan'}
-        </button>
-      </div>
-      {showReview && (
-        <div style={{
-          marginTop: '8px', fontSize: '12px', color: '#4b5563', lineHeight: '1.45',
-          maxHeight: '160px', overflowY: 'auto', whiteSpace: 'pre-line',
-          background: '#f9fafb', borderRadius: '8px', padding: '8px 10px',
-        }}>
-          {cleanInsight(card.insight) || 'No review text available.'}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// "Let Tripy choose": of the (already near-route) suggestions, pick the
-// best-rated one, tie-broken by least detour.
-function bestPick(list) {
-  return list.reduce((a, b) => {
-    const ra = Number(a.rating) || 0, rb = Number(b.rating) || 0
-    if (rb !== ra) return rb > ra ? b : a
-    return (b.detour_min ?? 0) < (a.detour_min ?? 0) ? b : a
-  }, list[0])
-}
-
-function MealSuggestions({ suggestions, selections, onAdd, busy }) {
-  const [expanded, setExpanded] = useState({})
-  const meals = MEAL_ORDER.filter(m => suggestions?.[m]?.length)
-  const empty = MEAL_ORDER.filter(m => Array.isArray(suggestions?.[m]) && !suggestions[m].length)
-  if (!meals.length && !empty.length) return null
-  return (
-    <div style={{ alignSelf: 'flex-start', maxWidth: '88%', width: '100%' }}>
-      {empty.map(meal => (
-        <div key={meal} style={{ fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px dashed #fbbf24', borderRadius: '8px', padding: '8px 11px', marginBottom: '8px' }}>
-          No {MEAL_TITLES[meal].toLowerCase()} spots fit this trip — it ends before {MEAL_TITLES[meal].toLowerCase()} time. Extend the end time, or give an earlier {MEAL_TITLES[meal].toLowerCase()} time (e.g. "{MEAL_TITLES[meal].toLowerCase()} at 17:30").
-        </div>
-      ))}
-      {meals.map(meal => {
-        const listAll = suggestions[meal]
-        const isOpen  = expanded[meal]
-        const list    = isOpen ? listAll : listAll.slice(0, 3)
-        const picked  = selections?.[meal]
-        return (
-          <div key={meal} style={{ marginBottom: '8px' }}>
-            <div style={{
-              fontSize: '11px', fontWeight: 700, color: '#b45309',
-              textTransform: 'uppercase', letterSpacing: '0.04em', margin: '6px 0 6px 4px',
-            }}>
-              🍽 {MEAL_TITLES[meal]} — pick one
-            </div>
-
-            {!picked && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
-                background: '#fffbeb', border: '1px dashed #fbbf24', borderRadius: '8px',
-                padding: '7px 10px', marginBottom: '8px',
-              }}>
-                <span style={{ fontSize: '12px', color: '#92400e', flex: 1 }}>
-                  You haven't picked a {MEAL_TITLES[meal].toLowerCase()} spot yet.
-                </span>
-                <button
-                  onClick={() => onAdd(meal, bestPick(list).id)} disabled={busy}
-                  style={{
-                    background: '#b45309', color: '#fff', border: 'none', borderRadius: '8px',
-                    padding: '5px 11px', cursor: busy ? 'default' : 'pointer',
-                    fontSize: '12px', fontWeight: 700, opacity: busy ? 0.6 : 1, whiteSpace: 'nowrap',
-                  }}>
-                  ✨ Let Tripy choose
-                </button>
-              </div>
-            )}
-
-            {list.map(card => (
-              <MealCard
-                key={card.id} card={card} busy={busy}
-                selected={picked === card.id}
-                onAdd={() => onAdd(meal, card.id)}
-              />
-            ))}
-            {listAll.length > 3 && (
-              <button
-                onClick={() => setExpanded(e => ({ ...e, [meal]: !isOpen }))}
-                style={{
-                  background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer',
-                  fontSize: '12px', fontWeight: 600, padding: '2px 4px', marginBottom: '4px',
-                }}>
-                {isOpen ? 'Show fewer' : `Show ${listAll.length - 3} more option${listAll.length - 3 > 1 ? 's' : ''}`}
-              </button>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 const markdownComponents = {
   p: ({ children }) => <p style={{ margin: '0 0 6px 0' }}>{children}</p>,
@@ -271,25 +18,70 @@ const markdownComponents = {
   em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
 }
 
-export default function ChatPanel({ userLocation, onPlanReady }) {
+// A chat message that carries a plan -> the snake-cased `plan` shape the shared
+// Itinerary components (and the saved-trip store) expect.
+function messageToPlan(m) {
+  return {
+    trip_id:          m.tripId,
+    stops:            m.stops || [],
+    skipped:          m.skipped || [],
+    meal_suggestions: m.mealSuggestions || {},
+    meal_selections:  m.mealSelections || {},
+    coords:           m.coords || null,
+    trip_date:        m.tripDate || null,
+  }
+}
+
+export default function ChatPanel({
+  userLocation, onPlanReady, onSaveTrip, initialTrip,
+  onCollapse, onToggleWide, isWide,
+}) {
   const [messages, setMessages] = useState([{
     role: 'assistant',
     content: "Hi! I'm Tripy 👋 Tell me what kind of day you want — I'll plan the whole thing around Trivandrum.\n\nTry something like: *I have 9am–6pm today, love temples and old architecture.*",
   }])
-  const [input, setInput]   = useState('')
+  const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
   const [mealBusy, setMealBusy] = useState(false)
+  const [planModal, setPlanModal] = useState(null)  // message index whose full plan is open
+  const [mealModal, setMealModal] = useState(null)  // { msgIndex, tripId, meal } | null
   const bottomRef = useRef(null)
+  const seededRef = useRef(null)                    // last saved-trip id dropped into the chat
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Drop a saved trip into the conversation when the user opens one to edit.
+  // Guarded by id so it appends once (the planner isn't remounted anymore).
+  useEffect(() => {
+    if (!initialTrip || seededRef.current === initialTrip.id) return
+    seededRef.current = initialTrip.id
+    const p = initialTrip.plan || {}
+    setMessages(prev => [...prev, {
+      role: 'assistant',
+      content: `Here's your saved trip **${initialTrip.name}**. Tell me what to change — add or remove a stop, swap a meal — or keep planning.`,
+      stops: p.stops || [], skipped: p.skipped || [],
+      mealSuggestions: p.meal_suggestions || {}, mealSelections: p.meal_selections || {},
+      tripId: p.trip_id, tripDate: p.trip_date, coords: p.coords,
+      tripName: initialTrip.name, savedId: initialTrip.id, savedAt: initialTrip.createdAt, saved: true,
+    }])
+    if ((p.stops || []).length) onPlanReady(p)
+  }, [initialTrip])  // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateLastAssistant(patch) {
     setMessages(prev => {
       const next = [...prev]
       const i = next.length - 1
       if (next[i]?.role === 'assistant') next[i] = { ...next[i], ...patch }
+      return next
+    })
+  }
+
+  function updateMessageAt(index, patch) {
+    setMessages(prev => {
+      const next = [...prev]
+      if (next[index]) next[index] = { ...next[index], ...patch }
       return next
     })
   }
@@ -315,9 +107,6 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
       const contentType = res.headers.get('content-type') || ''
 
       if (!res.ok) {
-        // Errors raised before streaming starts (bad key, Groq request
-        // failed, etc.) come back as plain JSON -- surface the real
-        // message instead of leaving the bubble blank.
         let detail = `HTTP ${res.status}`
         try { detail = (await res.json()).detail || detail } catch {}
         setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ ${detail}` }])
@@ -325,9 +114,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
       }
 
       if (contentType.includes('text/plain')) {
-        // Streaming narrative from Groq, with a structured-plan JSON trailer
-        // appended after PLAN_TRAILER. We show only the narrative while streaming
-        // and parse the trailer once the stream ends.
+        // Streaming narrative from Groq, with a structured-plan JSON trailer.
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let raw = ''
@@ -355,6 +142,10 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
           patch.mealSuggestions = plan.meal_suggestions || {}
           patch.mealSelections  = seedSelections(plan.meal_suggestions)
           patch.tripId          = plan.trip_id
+          patch.tripDate        = plan.trip_date
+          patch.coords          = plan.coords
+          patch.tripName        = defaultTripName(plan)
+          patch.saved           = false
         }
         updateLastAssistant(patch)
         if (plan && plan.stops?.length) onPlanReady(plan)
@@ -371,14 +162,6 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     } finally {
       setLoading(false)
     }
-  }
-
-  function updateMessageAt(index, patch) {
-    setMessages(prev => {
-      const next = [...prev]
-      if (next[index]) next[index] = { ...next[index], ...patch }
-      return next
-    })
   }
 
   // "Add" on a meal card -> re-plan with that restaurant anchored. One per meal.
@@ -400,6 +183,9 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
           skipped:         plan.skipped || [],
           mealSuggestions: plan.meal_suggestions || {},
           mealSelections:  selections,
+          coords:          plan.coords ?? messages[msgIndex]?.coords,
+          tripDate:        plan.trip_date ?? messages[msgIndex]?.tripDate,
+          saved:           false,
         })
         if (plan.stops?.length) onPlanReady(plan)
       }
@@ -407,8 +193,7 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
     finally { setMealBusy(false) }
   }
 
-  // ✕ on a stop -> re-plan without it. Removing a meal un-picks it; removing a
-  // sightseeing stop/destination excludes it and re-optimises the rest.
+  // ✕ on a stop -> re-plan without it.
   async function removeStop(msgIndex, tripId, id) {
     if (!tripId || mealBusy) return
     setMealBusy(true)
@@ -425,11 +210,26 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
           skipped:         plan.skipped || [],
           mealSuggestions: plan.meal_suggestions || {},
           mealSelections:  seedSelections(plan.meal_suggestions),
+          coords:          plan.coords ?? messages[msgIndex]?.coords,
+          tripDate:        plan.trip_date ?? messages[msgIndex]?.tripDate,
+          saved:           false,
         })
         if (plan.stops?.length) onPlanReady(plan)
       }
     } catch { /* leave the previous plan in place on failure */ }
     finally { setMealBusy(false) }
+  }
+
+  // Persist the plan on a message to the saved-trips store (localStorage).
+  function saveCurrent(i) {
+    const m = messages[i]
+    if (!m) return
+    const plan = messageToPlan(m)
+    const id = m.savedId || newTripId()
+    const name = m.tripName || defaultTripName(plan)
+    const trip = { id, name, date: m.tripDate || null, createdAt: m.savedAt || new Date().toISOString(), plan }
+    onSaveTrip?.(trip)
+    updateMessageAt(i, { savedId: id, saved: true, savedAt: trip.createdAt, tripName: name })
   }
 
   const styles = {
@@ -439,12 +239,14 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
       borderRadius: '16px', overflow: 'hidden',
     },
     header: {
-      display: 'flex', alignItems: 'center', gap: '12px',
-      padding: '12px 16px', borderBottom: '1px solid #1f2937',
-      background: '#000',
+      display: 'flex', alignItems: 'center', gap: '10px',
+      padding: '10px 14px 10px 8px', borderBottom: '1px solid #1f2937', background: '#000',
     },
-    title: { color: '#fff', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.3px' },
-    sub:   { color: '#93c5fd', fontSize: '12px', marginTop: '2px' },
+    headerBtn: {
+      background: 'rgba(255,255,255,0.12)', color: '#fff', border: 'none',
+      borderRadius: '8px', width: '30px', height: '30px', cursor: 'pointer',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    },
     msgs: {
       flex: 1, overflowY: 'auto', padding: '16px',
       display: 'flex', flexDirection: 'column', gap: '12px',
@@ -457,19 +259,6 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
       borderRadius: role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
       padding: '10px 14px', fontSize: '14px', lineHeight: '1.5',
     }),
-    skippedWrap: {
-      alignSelf: 'flex-start', maxWidth: '88%', marginTop: '-4px',
-    },
-    stopsLabel: {
-      fontSize: '11px', fontWeight: 700, color: '#2563eb',
-      textTransform: 'uppercase', letterSpacing: '0.04em',
-      margin: '6px 0 6px 4px',
-    },
-    skippedLabel: {
-      fontSize: '11px', fontWeight: 700, color: '#9ca3af',
-      textTransform: 'uppercase', letterSpacing: '0.04em',
-      margin: '6px 0 6px 4px',
-    },
     inputRow: {
       padding: '12px 16px', borderTop: '1px solid #e5e7eb',
       display: 'flex', gap: '8px', alignItems: 'flex-end',
@@ -491,8 +280,22 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
-        <img src="/logo.png" alt="Tripy logo" style={{ height: '88px', width: 'auto', display: 'block' }} />
-        <img src="/title.png" alt="Tripy" style={{ height: '90px', width: 'auto', display: 'block' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+          <img src="/logo.png" alt="Tripy logo" style={{ height: '88px', width: 'auto', display: 'block' }} />
+          <img src="/title.png" alt="Tripy" style={{ height: '90px', width: 'auto', display: 'block' }} />
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
+          {onToggleWide && (
+            <button onClick={onToggleWide} style={styles.headerBtn} title={isWide ? 'Shrink chat' : 'Widen chat'}>
+              {isWide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          )}
+          {onCollapse && (
+            <button onClick={onCollapse} style={styles.headerBtn} title="Minimise chat">
+              <Minus size={16} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={styles.msgs}>
@@ -501,32 +304,16 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
             <div style={styles.bubble(m.role)}>
               <ReactMarkdown components={markdownComponents}>{m.content}</ReactMarkdown>
             </div>
-            {m.stops?.length > 0 && (() => {
-              let n = 0
-              return (
-                <div style={styles.skippedWrap}>
-                  <div style={styles.stopsLabel}>Your itinerary · tap ✕ to drop a stop</div>
-                  {m.stops.map(s => {
-                    const num = (!s.is_meal && !s.is_destination) ? n++ : null
-                    return (
-                      <StopCard
-                        key={s.id || s.name} stop={s} index={num} busy={mealBusy}
-                        onRemove={m.tripId ? () => removeStop(i, m.tripId, s.id) : null}
-                      />
-                    )
-                  })}
-                </div>
-              )
-            })()}
-            {m.mealSuggestions && (
-              <MealSuggestions
-                suggestions={m.mealSuggestions}
-                selections={m.mealSelections}
+            {m.stops?.length > 0 && (
+              <TripSummaryCard
+                plan={messageToPlan(m)}
+                name={m.tripName || defaultTripName(messageToPlan(m))}
+                saved={!!m.saved}
                 busy={mealBusy}
-                onAdd={(meal, placeId) => addMeal(i, m.tripId, meal, placeId)}
+                onOpen={() => setPlanModal(i)}
+                onSave={onSaveTrip ? () => saveCurrent(i) : null}
               />
             )}
-            {m.skipped?.length > 0 && <SkippedSection skipped={m.skipped} />}
           </React.Fragment>
         ))}
         {loading && (
@@ -550,6 +337,35 @@ export default function ChatPanel({ userLocation, onPlanReady }) {
           <Send size={16} />
         </button>
       </div>
+
+      {planModal != null && messages[planModal]?.stops?.length > 0 && (
+        <FullPlanModal
+          plan={messageToPlan(messages[planModal])}
+          name={messages[planModal].tripName || defaultTripName(messageToPlan(messages[planModal]))}
+          editable
+          onRename={(name) => updateMessageAt(planModal, { tripName: name })}
+          busy={mealBusy}
+          onRemove={messages[planModal].tripId ? (id) => removeStop(planModal, messages[planModal].tripId, id) : null}
+          onOpenSlot={(meal) => setMealModal({ msgIndex: planModal, tripId: messages[planModal].tripId, meal })}
+          onSave={onSaveTrip ? () => saveCurrent(planModal) : null}
+          saved={!!messages[planModal].saved}
+          onClose={() => setPlanModal(null)}
+        />
+      )}
+
+      {mealModal && (
+        <MealModal
+          meal={mealModal.meal}
+          cards={messages[mealModal.msgIndex]?.mealSuggestions?.[mealModal.meal] || []}
+          selectedId={messages[mealModal.msgIndex]?.mealSelections?.[mealModal.meal]}
+          busy={mealBusy}
+          onClose={() => setMealModal(null)}
+          onPick={(placeId) => {
+            addMeal(mealModal.msgIndex, mealModal.tripId, mealModal.meal, placeId)
+            setMealModal(null)
+          }}
+        />
+      )}
 
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>

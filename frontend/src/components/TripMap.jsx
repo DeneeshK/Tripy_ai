@@ -1,6 +1,22 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
+import { Plus, Minus } from 'lucide-react'
 import L from 'leaflet'
+
+// WMO weather code -> emoji (matches WeatherWidget's buckets), for the little
+// forecast badge shown on each stop pin for the trip's day.
+function wxEmoji(code) {
+  if (code == null) return ''
+  if ([95, 96, 99].includes(code)) return '⛈️'
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return '🌨️'
+  if ([80, 81, 82].includes(code)) return '🌦️'
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67].includes(code)) return '🌧️'
+  if ([45, 48].includes(code)) return '🌫️'
+  if (code === 3) return '☁️'
+  if (code === 2) return '⛅'
+  if (code === 1 || code === 0) return '☀️'
+  return ''
+}
 
 // ─── Tile layer definitions ───────────────────────────────────────────────────
 function buildLayers(stadiaKey, owmKey) {
@@ -39,7 +55,7 @@ function buildLayers(stadiaKey, owmKey) {
 // ─── Location pin marker (real teardrop pin shape) ───────────────────────────
 // Sightseeing stops: red pin with the stop number. Meal stops: amber pin with
 // a fork glyph, so food is visually distinct from sightseeing on the map.
-function pinIcon(n, meal = false) {
+function pinIcon(n, meal = false, wx = '') {
   const fill   = meal ? '#d97706' : '#dc2626'
   const inner  = meal
     ? `<text x="18" y="22.5" text-anchor="middle" font-size="11">🍴</text>`
@@ -52,9 +68,15 @@ function pinIcon(n, meal = false) {
       <circle cx="18" cy="18" r="9" fill="rgba(255,255,255,0.95)"/>
       ${inner}
     </svg>`
+  // The trip-day forecast badge sits at the pin's top-right corner.
+  const badge = wx
+    ? `<div style="position:absolute;top:-3px;right:-7px;width:19px;height:19px;border-radius:50%;
+         background:#fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);display:flex;align-items:center;
+         justify-content:center;font-size:12px;line-height:1;">${wx}</div>`
+    : ''
   return L.divIcon({
     className: '',
-    html: svg,
+    html: `<div style="position:relative;width:36px;height:48px;">${svg}${badge}</div>`,
     iconSize:    [36, 48],
     iconAnchor:  [18, 48],
     popupAnchor: [0,  -50],
@@ -75,31 +97,41 @@ const homePin = L.divIcon({
 
 // ─── Popup content ────────────────────────────────────────────────────────────
 function StopPopup({ stop }) {
-  // Pull first real sentence from insight (the full visitor review text)
-  const brief = stop.insight
-    ? stop.insight.split(/[.!?]/)[0].replace(/^[^:]*:\s*/, '').trim().slice(0, 130)
+  // Show the pre-generated, polished summary. Fall back to a tidied first
+  // review sentence only for a place that hasn't been summarised yet.
+  const fallback = stop.insight
+    ? stop.insight.split('[RAW_REVIEW_REPOSITORY]').pop()
+        .replace(/"/g, '').split(/[.!?]/)[0].trim().slice(0, 150)
     : ''
+  const summary = (stop.summary && stop.summary.trim()) || (fallback ? `${fallback}.` : '')
+  const meal = stop.is_meal
 
   return (
-    <div style={{ minWidth: '180px', maxWidth: '240px', padding: '2px' }}>
-      <div style={{ fontWeight: 700, fontSize: '14px', color: '#1e293b', marginBottom: '4px' }}>
+    <div style={{ minWidth: '210px', maxWidth: '256px', padding: '2px' }}>
+      <div style={{ fontWeight: 700, fontSize: '14.5px', color: '#1e293b', marginBottom: '6px' }}>
         {stop.name}
       </div>
-      <div style={{
-        display: 'inline-block', background: '#fee2e2', color: '#dc2626',
-        fontSize: '11px', fontWeight: 600, padding: '2px 7px', borderRadius: '10px',
-        marginBottom: '6px',
-      }}>
-        {stop.visit_starts} – {stop.visit_ends}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '8px', flexWrap: 'wrap' }}>
+        <span style={{
+          background: meal ? '#fef3c7' : '#fee2e2', color: meal ? '#b45309' : '#dc2626',
+          fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '10px',
+        }}>
+          {stop.visit_starts} – {stop.visit_ends}
+        </span>
+        {stop.rating > 0 && (
+          <span style={{ fontSize: '11.5px', color: '#f59e0b', fontWeight: 700 }}>
+            ★ {Number(stop.rating).toFixed(1)}
+          </span>
+        )}
       </div>
-      {stop.vibe && (
-        <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '5px' }}>
-          {stop.vibe.split(',').slice(0, 3).map(v => v.trim()).join(' · ')}
+      {summary && (
+        <div style={{ fontSize: '12.5px', color: '#374151', lineHeight: '1.5' }}>
+          {summary}
         </div>
       )}
-      {brief && (
-        <div style={{ fontSize: '12px', color: '#374151', lineHeight: '1.4', borderTop: '1px solid #f3f4f6', paddingTop: '5px' }}>
-          {brief}{brief.length === 130 ? '…' : '.'}
+      {stop.vibe && (
+        <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '8px', borderTop: '1px solid #f3f4f6', paddingTop: '6px' }}>
+          {stop.vibe.split(',').slice(0, 4).map(v => v.trim()).join(' · ')}
         </div>
       )}
     </div>
@@ -107,101 +139,73 @@ function StopPopup({ stop }) {
 }
 
 // ─── Layer Switcher ───────────────────────────────────────────────────────────
+// A clean, always-visible control: base map as a segmented toggle, weather
+// overlays as small chips beneath. No dropdown, no big icon.
 function LayerSwitcher({ layers, activeBaseId, onBaseChange, activeWeatherId, onWeatherChange, dark }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const map = useMap()
+  const bg      = dark ? 'rgba(15,23,42,0.90)' : 'rgba(255,255,255,0.96)'
+  const text    = dark ? '#e2e8f0' : '#1e293b'
+  const border  = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
+  const trackBg = dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6'
+  const activeBg = '#2563eb'
 
-  useEffect(() => {
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [])
-
-  const bg     = dark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.95)'
-  const text   = dark ? '#e2e8f0' : '#1e293b'
-  const border = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'
-  const sub    = dark ? '#94a3b8' : '#6b7280'
-  const activeBg  = dark ? 'rgba(37,99,235,0.25)' : '#eff6ff'
-  const activeBdr = '#2563eb'
-  const hoverBg   = dark ? 'rgba(255,255,255,0.06)' : '#f8fafc'
-
-  const cardStyle = {
-    background: bg,
-    backdropFilter: 'blur(12px)',
-    border: `1px solid ${border}`,
-    borderRadius: '14px',
-    padding: '14px',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-    minWidth: '220px',
-    color: text,
+  const card = {
+    background: bg, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+    border: `1px solid ${border}`, borderRadius: '14px',
+    boxShadow: '0 6px 24px rgba(0,0,0,0.18)', color: text,
   }
-
-  const sectionLabel = {
-    fontSize: '10px', fontWeight: 700, color: sub,
-    textTransform: 'uppercase', letterSpacing: '0.08em',
-    marginBottom: '8px',
+  const zoomBtn = {
+    width: '38px', height: '34px', border: 'none', background: 'transparent', color: text,
+    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
   }
-
-  const optionBtn = (active) => ({
-    flex: 1, padding: '9px 6px', borderRadius: '9px', cursor: 'pointer',
-    border: `1.5px solid ${active ? activeBdr : border}`,
+  const seg = (active) => ({
+    padding: '6px 13px', borderRadius: '8px', cursor: 'pointer', border: 'none',
     background: active ? activeBg : 'transparent',
-    color: text, fontSize: '12px', fontWeight: 600,
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
-    transition: 'background 0.15s, border-color 0.15s',
+    color: active ? '#fff' : text,
+    fontSize: '12px', fontWeight: 700, whiteSpace: 'nowrap',
+    transition: 'background .15s, color .15s',
+  })
+  const chip = (active) => ({
+    padding: '5px 10px', borderRadius: '20px', cursor: 'pointer',
+    border: `1px solid ${active ? activeBg : border}`,
+    background: active ? (dark ? 'rgba(37,99,235,0.30)' : '#eff6ff') : 'transparent',
+    color: active ? (dark ? '#bfdbfe' : '#2563eb') : text,
+    fontSize: '11.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
   })
 
   return (
-    <div ref={ref} style={{ position: 'absolute', bottom: '32px', right: '12px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-      {open && (
-        <div style={cardStyle}>
-          <p style={sectionLabel}>Map style</p>
-          <div style={{ display: 'flex', gap: '7px', marginBottom: layers.weather.length ? '14px' : 0 }}>
-            {layers.base.map(l => (
-              <button key={l.id} onClick={() => onBaseChange(l.id)} style={optionBtn(activeBaseId === l.id)}>
-                <span style={{ fontSize: '22px' }}>{l.emoji}</span>
-                {l.label}
+    <div style={{
+      position: 'absolute', bottom: '26px', right: '12px', zIndex: 1000,
+      display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px',
+    }}>
+      {/* Zoom, moved off the map's top-left corner so it never overlaps the chat. */}
+      <div style={{ ...card, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <button style={zoomBtn} onClick={() => map.zoomIn()} title="Zoom in"><Plus size={17} /></button>
+        <div style={{ height: '1px', background: border }} />
+        <button style={zoomBtn} onClick={() => map.zoomOut()} title="Zoom out"><Minus size={17} /></button>
+      </div>
+
+      {/* Base map + weather overlays. */}
+      <div style={{ ...card, padding: '6px' }}>
+        <div style={{ display: 'flex', gap: '2px', background: trackBg, borderRadius: '10px', padding: '3px' }}>
+          {layers.base.map(l => (
+            <button key={l.id} onClick={() => onBaseChange(l.id)} style={seg(activeBaseId === l.id)}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+        {layers.weather.length > 0 && (
+          <div style={{ display: 'flex', gap: '6px', padding: '8px 3px 2px', flexWrap: 'wrap' }}>
+            {layers.weather.map(l => (
+              <button key={l.id}
+                onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
+                style={chip(activeWeatherId === l.id)}>
+                <span>{l.emoji}</span>{l.label}
               </button>
             ))}
           </div>
-          {layers.weather.length > 0 && (
-            <>
-              <p style={sectionLabel}>Weather overlay</p>
-              <div style={{ display: 'flex', gap: '7px' }}>
-                {layers.weather.map(l => (
-                  <button key={l.id}
-                    onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
-                    style={optionBtn(activeWeatherId === l.id)}>
-                    <span style={{ fontSize: '20px' }}>{l.emoji}</span>
-                    {l.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          {layers.weather.length === 0 && (
-            <p style={{ fontSize: '11px', color: sub, marginTop: '10px', borderTop: `1px solid ${border}`, paddingTop: '10px' }}>
-              Add <code>OWM_API_KEY</code> to <code>.env</code> for weather overlays.
-            </p>
-          )}
-        </div>
-      )}
-
-      <button onClick={() => setOpen(v => !v)} style={{
-        background: bg, backdropFilter: 'blur(12px)',
-        border: `1px solid ${border}`, borderRadius: '10px',
-        padding: '8px 14px', cursor: 'pointer',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.15)',
-        display: 'flex', alignItems: 'center', gap: '7px',
-        color: text, fontSize: '13px', fontWeight: 600,
-        transition: 'box-shadow 0.15s',
-      }}>
-        <span style={{ fontSize: '18px' }}>
-          {layers.base.find(l => l.id === activeBaseId)?.emoji || '🗺️'}
-        </span>
-        Layers
-        <span style={{ fontSize: '10px', opacity: 0.6 }}>{open ? '▲' : '▼'}</span>
-      </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -213,7 +217,7 @@ function FlyTo({ center }) {
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
-export default function TripMap({ userLocation, stops, route, stadiaApiKey = '', owmApiKey = '' }) {
+export default function TripMap({ userLocation, stops, route, stadiaApiKey = '', owmApiKey = '', stopWeather = {} }) {
   const [activeBaseId, setActiveBaseId]       = useState('osm')
   const [activeWeatherId, setActiveWeatherId] = useState(null)
 
@@ -228,7 +232,7 @@ export default function TripMap({ userLocation, stops, route, stadiaApiKey = '',
   const center      = userLocation || [8.5241, 76.9366]
 
   return (
-    <MapContainer center={center} zoom={12} style={{ width: '100%', height: '100%' }} zoomControl>
+    <MapContainer center={center} zoom={12} style={{ width: '100%', height: '100%' }} zoomControl={false}>
       <TileLayer key={baseLayer.id} url={baseLayer.url}
         attribution={baseLayer.attribution} maxZoom={baseLayer.maxZoom} />
 
@@ -244,7 +248,8 @@ export default function TripMap({ userLocation, stops, route, stadiaApiKey = '',
       )}
 
       {stops.map((s, i) => (
-        <Marker key={`${s.name}-${i}`} position={[s.lat, s.lng]} icon={pinIcon(i + 1, s.is_meal)}>
+        <Marker key={`${s.name}-${i}`} position={[s.lat, s.lng]}
+          icon={pinIcon(i + 1, s.is_meal, wxEmoji(stopWeather[s.name]?.weather_code))}>
           <Popup><StopPopup stop={s} /></Popup>
         </Marker>
       ))}
