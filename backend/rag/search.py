@@ -23,7 +23,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine.distance_matrix import time_matrix_with_fallback
+from engine.distance_matrix import time_matrix_with_fallback, haversine_km
 from engine.itinerary_engine import Place, plan_itinerary as ortools_plan
 from engine.hours import resolve_for_day, best_window_in_span
 from engine.meals import (
@@ -402,6 +402,17 @@ def build_meal_suggestions(
     by_id = {p["id"]: p for p in food}
     route_points = [home] + [(s["lat"], s["lng"]) for s in base_stops]
 
+    # If the user chose a final destination ("...to the Lighthouse"), order the
+    # restaurants nearest→farthest FROM that spot and label the distance, since
+    # that's the anchor they're thinking about. Otherwise fall back to least
+    # route-detour ranking.
+    dest = next((s for s in base_stops if s.get("is_destination")), None)
+    ref_pt   = (dest["lat"], dest["lng"]) if dest else None
+    ref_name = dest["name"] if dest else None
+
+    def _km(p):
+        return round(haversine_km(ref_pt, (p["lat"], p["lng"])), 1)
+
     suggestions: Dict[str, List[Dict]] = {}
     for meal in requested_meals:
         sel_id = selections.get(meal)
@@ -420,14 +431,22 @@ def build_meal_suggestions(
                 continue
             eligible.append(p)
 
-        ranked = rank_by_route_proximity(route_points, eligible, time_matrix_with_fallback)
-        cards = [suggestion_card(p, detour, added=(p["id"] == sel_id))
-                 for detour, p in ranked[:N_SUGGESTIONS]]
-
-        # Pin the user's current pick on top even if it isn't in the nearest N.
-        if sel_id and sel_id in by_id and not any(c["id"] == sel_id for c in cards):
-            detour = next((d for d, p in ranked if p["id"] == sel_id), 0.0)
-            cards.insert(0, suggestion_card(by_id[sel_id], detour, added=True))
+        if ref_pt:
+            ordered = sorted(eligible, key=_km)   # nearest to the destination first
+            cards = [suggestion_card(p, None, added=(p["id"] == sel_id),
+                                     distance_km=_km(p), ref_name=ref_name)
+                     for p in ordered[:N_SUGGESTIONS]]
+            if sel_id and sel_id in by_id and not any(c["id"] == sel_id for c in cards):
+                cards.insert(0, suggestion_card(by_id[sel_id], None, added=True,
+                                                distance_km=_km(by_id[sel_id]), ref_name=ref_name))
+        else:
+            ranked = rank_by_route_proximity(route_points, eligible, time_matrix_with_fallback)
+            cards = [suggestion_card(p, detour, added=(p["id"] == sel_id))
+                     for detour, p in ranked[:N_SUGGESTIONS]]
+            # Pin the user's current pick on top even if it isn't in the nearest N.
+            if sel_id and sel_id in by_id and not any(c["id"] == sel_id for c in cards):
+                detour = next((d for d, p in ranked if p["id"] == sel_id), 0.0)
+                cards.insert(0, suggestion_card(by_id[sel_id], detour, added=True))
 
         suggestions[meal] = cards
     return suggestions

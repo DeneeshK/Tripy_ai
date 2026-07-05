@@ -202,16 +202,39 @@ def _already_asked(messages, needle: str) -> bool:
                for m in messages)
 
 
-# Marker phrases used both to render the question and to detect we already asked.
-_Q_INTEREST = "what kind of day"
-_Q_DIET     = "vegetarian or non-vegetarian"
-_Q_MEALTIME = "specific time"
+# A distinctive phrase embedded in each question so we can tell we already asked
+# it -- kept stable across the friendly wording variants below.
+_Q_INTEREST = "kind of day"
+_Q_TRIPTIME = "start and wrap up"
+_Q_FOOD     = "work in any meals"
+_Q_DIET     = "for the meals"
+
+_FOOD_WORDS = ("breakfast", "lunch", "dinner", "supper", "brunch", "meal",
+               "food", "restaurant", "hungry", "veg")
+
+
+def _mentions_food(messages) -> bool:
+    """Has the user themselves brought food up (wanting it OR declining it)? If so
+    we don't ask about meals -- they've already addressed it."""
+    return any(getattr(m, "role", None) == "user"
+               and any(w in (m.content or "").lower() for w in _FOOD_WORDS)
+               for m in messages)
+
+
+def _variant(options, messages):
+    """Pick one friendly phrasing -- stable within a conversation, but varied
+    across trips, so the questions don't read like the same rigid template every
+    single time."""
+    seed = next((m.content or "" for m in messages if getattr(m, "role", None) == "user"), "")
+    return options[sum(map(ord, seed)) % len(options)]
 
 
 def _essential_info_question(calls, messages) -> Optional[str]:
     """If a plan call is missing something essential, return the ONE question to
-    ask the user (asked at most once); else None so planning proceeds. Order:
-    interests → diet-for-meals → fixed/medical meal time."""
+    ask (asked at most once). The APP is the single voice that asks (the model is
+    told not to interrogate) so the flow stays coherent. Order: interests → time
+    window → food (which meals + veg/non-veg + any fixed time, all at once) →
+    veg/non-veg follow-up."""
     for c in calls:
         if c.get("name") != "plan_my_day":
             continue
@@ -223,24 +246,45 @@ def _essential_info_question(calls, messages) -> Optional[str]:
         has_focus = bool((a.get("query") or "").strip() or a.get("include_places")
                          or a.get("start_place") or a.get("end_place"))
         if not has_focus and not _already_asked(messages, _Q_INTEREST):
-            return ("Happy to plan it! First — **what kind of day** are you after? "
-                    "Temples, beaches, museums, markets, nature… a vibe or a couple "
-                    "of must-sees is plenty.")
+            return _variant([
+                "Love to help you plan this! **What kind of day** are you in the mood for — temples, "
+                "beaches, museums, markets, a bit of nature? A vibe or one must-see is plenty to start.",
+                "Let's build you a good one. **What kind of day** are you after — history and old "
+                "architecture, seaside and sun, green and quiet, buzzing markets? Even a rough vibe helps.",
+            ], messages)
 
-        wants_meals = bool(_norm_meals(a.get("meals")))
-        if wants_meals and _norm_diet(a.get("diet")) is None \
-                and not _already_asked(messages, _Q_DIET):
-            return ("Before I sort out the food stops — would you like "
-                    "**vegetarian or non-vegetarian** places? (or say “either” "
-                    "for a mix).")
+        # Time window -- both ends needed. The model omits them when the user
+        # never said when (trip_start/trip_end aren't required), so ask here
+        # rather than let a fabricated 09:00-18:00 slip through.
+        has_times = bool((a.get("trip_start") or "").strip()) and bool((a.get("trip_end") or "").strip())
+        if not has_times and not _already_asked(messages, _Q_TRIPTIME):
+            return _variant([
+                "Nice pick. And **when do you want to start and wrap up**? A rough start and end works "
+                "(say, “9 in the morning till 6”), or just tell me how many hours you've got.",
+                "Good choice. **When do you want to start and wrap up** the day? Give me a start and end "
+                "(like “10 to 5”), or how long you're free and I'll shape the day around it.",
+            ], messages)
 
-        # Fixed / medical meal timing -- asked once, after diet is settled.
-        if wants_meals and not _norm_meal_times(a.get("meal_times")) \
-                and not _already_asked(messages, _Q_MEALTIME):
-            return ("One last thing — do you need any meal at a **specific time** "
-                    "(for example, medication taken with food), or should I just fit "
-                    "them in naturally as we go? If there's a fixed time, tell me "
-                    "which meal and when.")
+        # ONE warm, grouped food question -- which meals + diet + any fixed time.
+        meals = _norm_meals(a.get("meals"))
+        if not meals and not _mentions_food(messages) and not _already_asked(messages, _Q_FOOD):
+            return _variant([
+                "Want me to **work in any meals** while we're out — breakfast, lunch, or supper? "
+                "If so, tell me which, whether you'd like **veg or non-veg**, and if any needs to land "
+                "at a set time (like medication with food). Or just say “no food” and I'll keep it to the sights.",
+                "Should I **work in any meals** — breakfast, lunch, supper? Let me know which ones, veg "
+                "or non-veg, and whether any has to be at a fixed time (say, meds with food). Happy to "
+                "skip food entirely too — totally your call.",
+            ], messages)
+
+        # Veg/non-veg follow-up: they chose meals but didn't say which.
+        if meals and _norm_diet(a.get("diet")) is None and not _already_asked(messages, _Q_DIET):
+            return _variant([
+                "Quick one so I pick the right places — **veg or non-veg for the meals**? "
+                "(or say “either” and I'll mix it up).",
+                "Got it. **Veg or non-veg for the meals** — or “either” for a bit of both?",
+            ], messages)
+
         return None   # this plan call has everything it needs
     return None
 
@@ -528,7 +572,9 @@ once, even in passing. Prefer doing over interrogating.
 ━━ TO PLAN OR RE-PLAN: call plan_my_day ━━
 Fill as many parameters as you can from what the user said:
  • query        — their interests / what they want to see.
- • trip_start, trip_end — "HH:MM" 24h.
+ • trip_start, trip_end — "HH:MM" 24h. Set them ONLY if the user gave a start/
+                  end time or a duration. If they never said when, OMIT both —
+                  do NOT invent 09:00-18:00; the app will ask for the window.
  • date         — if they named any day/date (see DATES). Naming "tomorrow"
                   COUNTS as giving the day — do not question the timing then.
  • start_place  — where the trip begins ("from Azhimala", "starting at Kovalam").
@@ -544,17 +590,16 @@ Fill as many parameters as you can from what the user said:
                   Azhimala temple"). Force-included as must-visit stops. Not for
                   restaurants (food_place) or the start/end (start_place/end_place).
 
-━━ ASK ONLY FOR WHAT'S GENUINELY MISSING ━━
-One short question at a time, and ONLY for these truly-required items:
- 1. Interests — only if you have no idea what they want to see.
- 2. Time window — only if there's no start & end time at all anywhere in the chat.
- 3. Timing conflict — ONLY when the start time is TODAY and has ALREADY passed
-    (it's {now_time} now) AND they did NOT name another day/date. Then ask once:
-    "It's already {now_time}. Plan from now to your end time, or another day?"
-    If they already said tomorrow / a date / a future day, DO NOT ask this.
- 4. Diet — ONLY if they asked for a meal but didn't say veg/non-veg.
-Nothing else needs a question — sensible defaults cover the rest. Once the
-required items are known, CALL plan_my_day immediately. Never ask "shall I plan?".
+━━ DON'T INTERROGATE — LET THE APP ASK ━━
+When the user wants a trip planned or changed, ALWAYS call plan_my_day with
+whatever they've given so far. Do NOT ask the user clarifying questions yourself.
+The app checks what's still missing (interests, time window, meals, veg/non-veg)
+and asks for it in ONE friendly voice — if you also ask, the two voices clash and
+repeat, which is exactly what we're fixing. So: extract what's there and call the
+tool. Fill only fields the user actually stated; omit the rest (never invent
+times, diet, or meals). If their start time already passed today and they named
+no other day, just start from now. For genuine non-planning chit-chat, reply
+normally.
 
 ━━ EDITS ARE RE-PLANS ━━
 When the user changes an existing trip ("start from Azhimala instead", "remove
@@ -595,8 +640,8 @@ PLAN_TOOL = {
             "type": "object",
             "properties": {
                 "query":      {"type": "string",  "description": "What the traveller wants to see/do."},
-                "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). Use current time if the user's requested start has already passed."},
-                "trip_end":   {"type": "string",  "description": "End time HH:MM (24h)."},
+                "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). ONLY set it if the user gave a start time or a duration to derive one from. If they never said when the day starts, OMIT this field entirely — do NOT invent 09:00; the app will ask. Use the current time if their requested start has already passed today."},
+                "trip_end":   {"type": "string",  "description": "End time HH:MM (24h). ONLY set it if the user gave an end time or a duration. If they never said when the day ends, OMIT this field — do NOT invent 18:00; the app will ask."},
                 "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
                 "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th', 'tomorrow', or 'day after tomorrow'. The backend resolves the correct weekday from this."},
                 "meals":      {"type": "array", "items": {"type": "string"}, "description": "Which meals to weave into the day, each one of: breakfast, lunch, dinner (supper = dinner). Empty array if the user wants no food stops."},
@@ -608,7 +653,7 @@ PLAN_TOOL = {
                 "exclude_places": {"type": "array", "items": {"type": "string"}, "description": "Names of places the user wants LEFT OUT of the plan (e.g. they said 'remove the museum', 'no Kuthira Malika', 'skip temples'). Pass the place names as spoken; the backend matches them even with typos. Carry earlier exclusions forward on re-plans."},
                 "include_places": {"type": "array", "items": {"type": "string"}, "description": "Specific landmarks the user wants GUARANTEED in the plan (e.g. 'include Kuthira Malika and Azhimala temple', 'make sure to add the zoo'). These are force-included as must-visit stops. Names as spoken; typos are matched. Not for restaurants (use food_place) or the start/end (use start_place/end_place)."},
             },
-            "required": ["query", "trip_start", "trip_end"],
+            "required": ["query"],
         },
     },
 }

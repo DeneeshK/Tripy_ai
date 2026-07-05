@@ -124,23 +124,28 @@ def rank_by_route_proximity(route_points, candidates, matrix_fn):
     return ranked
 
 
-def suggestion_card(place: dict, detour_min: float, added: bool) -> dict:
-    """Shape one restaurant into the card the frontend renders."""
+def suggestion_card(place: dict, detour_min, added: bool,
+                    distance_km=None, ref_name=None) -> dict:
+    """Shape one restaurant into the card the frontend renders. `distance_km` /
+    `ref_name` are set when suggestions are ordered by distance from the user's
+    chosen final destination (e.g. '1.2 km from Lighthouse')."""
     diet = place.get("diet", "na")
     return {
-        "id":         place["id"],
-        "name":       place["name"],
-        "lat":        place["lat"],
-        "lng":        place["lng"],
-        "category":   place.get("category", ""),
-        "diet":       diet,
-        "diet_label": DIET_LABEL.get(diet, ""),
-        "diet_note":  DIET_NOTE.get(diet, ""),
-        "rating":     place.get("rating", 0.0),
-        "vibe":       place.get("vibe", ""),
-        "insight":    place.get("insight", ""),
-        "detour_min": detour_min,
-        "added":      added,
+        "id":          place["id"],
+        "name":        place["name"],
+        "lat":         place["lat"],
+        "lng":         place["lng"],
+        "category":    place.get("category", ""),
+        "diet":        diet,
+        "diet_label":  DIET_LABEL.get(diet, ""),
+        "diet_note":   DIET_NOTE.get(diet, ""),
+        "rating":      place.get("rating", 0.0),
+        "vibe":        place.get("vibe", ""),
+        "insight":     place.get("insight", ""),
+        "detour_min":  detour_min,
+        "distance_km": distance_km,
+        "ref_name":    ref_name,
+        "added":       added,
     }
 
 

@@ -200,11 +200,15 @@ function MealCard({ card, selected, onAdd, busy }) {
           background: ds.bg, color: ds.fg, fontSize: '10.5px', fontWeight: 700,
           padding: '2px 7px', borderRadius: '20px',
         }}>{card.diet_label || ds.label}</span>
-        {card.detour_min != null && (
+        {card.distance_km != null ? (
+          <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+            {card.distance_km} km from {card.ref_name}
+          </span>
+        ) : card.detour_min != null ? (
           <span style={{ fontSize: '11px', color: '#9ca3af' }}>
             ~{Math.round(card.detour_min)} min off your route
           </span>
-        )}
+        ) : null}
       </div>
       {card.diet === 'both' && card.diet_note && (
         <div style={{ fontSize: '11.5px', color: '#92400e', marginBottom: '4px' }}>{card.diet_note}</div>
