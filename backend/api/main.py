@@ -206,8 +206,14 @@ def _already_asked(messages, needle: str) -> bool:
 # it -- kept stable across the friendly wording variants below.
 _Q_INTEREST = "kind of day"
 _Q_TRIPTIME = "start and wrap up"
+_Q_PASTTIME = "won't fit today"
 _Q_FOOD     = "work in any meals"
 _Q_DIET     = "for the meals"
+
+# A start time this many minutes or less in the past is treated as "now" (the
+# model rounding "start now" to the current minute, request latency, etc.) --
+# not flagged as stale.
+PAST_START_GRACE_MIN = 10
 
 _FOOD_WORDS = ("breakfast", "lunch", "dinner", "supper", "brunch", "meal",
                "food", "restaurant", "hungry", "veg")
@@ -219,6 +225,24 @@ def _mentions_food(messages) -> bool:
     return any(getattr(m, "role", None) == "user"
                and any(w in (m.content or "").lower() for w in _FOOD_WORDS)
                for m in messages)
+
+
+def _stale_start_today(a: dict) -> bool:
+    """True if the plan's date resolves to TODAY and the given trip_start is
+    already more than PAST_START_GRACE_MIN minutes behind the real clock -- i.e.
+    the requested window has already gone by and handing it to the planner as-is
+    would silently produce a plan for a time slot that's already over."""
+    trip_date = _resolve_trip_date(a.get("day"), a.get("date"))
+    if trip_date != datetime.now().strftime("%Y-%m-%d"):
+        return False
+    try:
+        sh, sm = map(int, str(a.get("trip_start", "")).split(":"))
+    except (ValueError, AttributeError):
+        return False
+    now = datetime.now()
+    start_min = sh * 60 + sm
+    now_min = now.hour * 60 + now.minute
+    return (now_min - start_min) > PAST_START_GRACE_MIN
 
 
 def _variant(options, messages):
@@ -263,6 +287,19 @@ def _essential_info_question(calls, messages) -> Optional[str]:
                 "(say, “9 in the morning till 6”), or just tell me how many hours you've got.",
                 "Good choice. **When do you want to start and wrap up** the day? Give me a start and end "
                 "(like “10 to 5”), or how long you're free and I'll shape the day around it.",
+            ], messages)
+
+        # The window is present but has already gone by TODAY (e.g. it's 9:48 PM
+        # and they asked for an 11:00 start) -- don't silently hand the planner a
+        # stale time slot. Ask once whether to start now or plan another day.
+        if has_times and _stale_start_today(a) and not _already_asked(messages, _Q_PASTTIME):
+            now_label = datetime.now().strftime("%I:%M %p").lstrip("0")
+            start_label = a["trip_start"]
+            return _variant([
+                f"Quick catch — it's already **{now_label}**, so a **{start_label}** start **won't fit today** "
+                "anymore. Want me to **start from now** instead, or plan this for **another day**?",
+                f"Heads up: it's **{now_label}** already, so **{start_label} today** has come and gone. "
+                "Should I plan **starting from now**, or would you rather pick **a different day**?",
             ], messages)
 
         # ONE warm, grouped food question -- which meals + diet + any fixed time.
@@ -575,6 +612,10 @@ Fill as many parameters as you can from what the user said:
  • trip_start, trip_end — "HH:MM" 24h. Set them ONLY if the user gave a start/
                   end time or a duration. If they never said when, OMIT both —
                   do NOT invent 09:00-18:00; the app will ask for the window.
+                  If the app already asked "it's already X, start from now or
+                  another day?" and the user said to start now, set trip_start
+                  to the CURRENT TIME given above, converted to 24h HH:MM —
+                  do not reuse their original stale time.
  • date         — if they named any day/date (see DATES). Naming "tomorrow"
                   COUNTS as giving the day — do not question the timing then.
  • start_place  — where the trip begins ("from Azhimala", "starting at Kovalam").
@@ -640,7 +681,7 @@ PLAN_TOOL = {
             "type": "object",
             "properties": {
                 "query":      {"type": "string",  "description": "What the traveller wants to see/do."},
-                "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). ONLY set it if the user gave a start time or a duration to derive one from. If they never said when the day starts, OMIT this field entirely — do NOT invent 09:00; the app will ask. Use the current time if their requested start has already passed today."},
+                "trip_start": {"type": "string",  "description": "Start time HH:MM (24h). ONLY set it if the user gave a start time or a duration to derive one from. If they never said when the day starts, OMIT this field entirely — do NOT invent 09:00; the app will ask. If the app already asked about a stale start time and the user said to start now, use the CURRENT TIME from the system prompt (converted to 24h HH:MM), not their original stale time."},
                 "trip_end":   {"type": "string",  "description": "End time HH:MM (24h). ONLY set it if the user gave an end time or a duration. If they never said when the day ends, OMIT this field — do NOT invent 18:00; the app will ask."},
                 "day":        {"type": "string",  "description": "Weekday name ('Monday'..'Sunday'), 'today', or 'tomorrow'. Omit if `date` is provided."},
                 "date":       {"type": "string",  "description": "Specific date as YYYY-MM-DD (e.g. '2026-07-14'). Pass this whenever the user mentions a specific date, even a partial one like 'the 14th', 'tomorrow', or 'day after tomorrow'. The backend resolves the correct weekday from this."},
