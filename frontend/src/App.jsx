@@ -2,10 +2,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import TripMap from './components/TripMap'
 import ChatPanel from './components/ChatPanel'
 import WeatherWidget from './components/WeatherWidget'
-import SavedTripsModal from './components/SavedTripsModal'
+import TripsPage from './components/TripsPage'
 import { FullPlanModal } from './components/Itinerary'
-import { loadTrips, saveTrip, deleteTrip } from './lib/tripStore'
-import { RefreshCw, Bookmark } from 'lucide-react'
+import { loadTrips, saveTrip, deleteTrip, saveTripJournal } from './lib/tripStore'
+import { RefreshCw, BookOpen } from 'lucide-react'
 
 const API = ''
 const POLL_INTERVAL_MS = 30 * 60 * 1000  // 30 minutes
@@ -39,6 +39,18 @@ export default function App() {
     setSavedTrips(deleteTrip(id))
     setOpenTrip(t => (t && t.id === id ? null : t))
   }, [])
+
+  // Personal per-stop journal notes on a saved trip: keystrokes update the open
+  // trip in memory immediately; the actual localStorage write happens on blur
+  // so we're not hitting storage on every character typed.
+  const handleJournalChange = useCallback((key, text) => {
+    setOpenTrip(t => t && { ...t, journal: { ...(t.journal || {}), [key]: text } })
+  }, [])
+  const handleJournalBlur = useCallback((key) => {
+    if (!openTrip) return
+    const text = (openTrip.journal || {})[key] || ''
+    setSavedTrips(saveTripJournal(openTrip.id, key, text))
+  }, [openTrip])
 
   const CHAT_MIN = 320
   const CHAT_LEFT = 16               // matches styles.left `left`
@@ -383,11 +395,11 @@ export default function App() {
       </div>
 
       <button style={styles.savedFab} onClick={() => setSavedOpen(true)} title="Your saved plans">
-        <Bookmark size={17} /> Your saved plans
+        <BookOpen size={17} /> Your saved plans
       </button>
 
       {savedOpen && (
-        <SavedTripsModal
+        <TripsPage
           trips={savedTrips}
           onClose={() => setSavedOpen(false)}
           onOpen={(t) => setOpenTrip(t)}
@@ -403,6 +415,9 @@ export default function App() {
           onClose={() => setOpenTrip(null)}
           onEditInPlanner={() => { setInitialTrip(openTrip); setOpenTrip(null); setSavedOpen(false); setChatOpen(true) }}
           onDelete={() => handleDeleteTrip(openTrip.id)}
+          journal={openTrip.journal}
+          onJournalChange={handleJournalChange}
+          onJournalBlur={handleJournalBlur}
         />
       )}
     </div>

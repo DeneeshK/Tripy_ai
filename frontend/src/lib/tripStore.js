@@ -35,6 +35,16 @@ export function deleteTrip(id) {
   return persist(loadTrips().filter(t => t.id !== id))
 }
 
+// Persist one journal entry (keyed by stop id/name) onto a saved trip -- used
+// for the personal "what did you think of this place" notes on the trip viewer.
+export function saveTripJournal(tripId, stopKey, text) {
+  const list = loadTrips()
+  const i = list.findIndex(t => t.id === tripId)
+  if (i < 0) return list
+  list[i] = { ...list[i], journal: { ...(list[i].journal || {}), [stopKey]: text } }
+  return persist(list)
+}
+
 export function newTripId() {
   return 't_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }

@@ -5,7 +5,7 @@
 // trip viewer on the home screen. ChatPanel keeps only the conversation logic.
 
 import React, { useState } from 'react'
-import { XCircle, Car } from 'lucide-react'
+import { XCircle, Car, Save, Check, ArrowUpRight, PenLine } from 'lucide-react'
 
 export const MEAL_TITLES = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Supper' }
 export const MEAL_ORDER  = ['breakfast', 'lunch', 'dinner']
@@ -336,11 +336,40 @@ export function MealModal({ meal, cards, selectedId, busy, onPick, onClose }) {
   )
 }
 
+// A personal note about a visited place -- collapsed to a small prompt until
+// tapped, then an auto-growing textarea. Changes flow up immediately (so the
+// text never vanishes on re-render); the caller decides when to persist
+// (typically on blur, to avoid writing to storage on every keystroke).
+function JournalNote({ value, onChange, onBlur }) {
+  const [open, setOpen] = useState(!!value)
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={journalToggle}>
+        <PenLine size={12} /> Add a journal note
+      </button>
+    )
+  }
+  return (
+    <textarea
+      autoFocus={!value}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      onBlur={onBlur}
+      placeholder="What did you think of this place? Jot down a memory…"
+      style={journalTextarea}
+    />
+  )
+}
+
 // The itinerary body: sightseeing + meal stops in time order, drive-time
 // connectors between them, and (when interactive) an inline "Add <meal>" slot
 // wherever a requested meal hasn't been chosen. onOpenSlot/onRemove absent =>
-// read-only (saved-trip view).
-export function ItineraryBlock({ stops, suggestions, selections, busy, onRemove, onOpenSlot }) {
+// read-only (saved-trip view). journal/onJournalChange/onJournalBlur, when
+// given, add a per-stop personal note field (used on the saved-trip viewer).
+export function ItineraryBlock({
+  stops, suggestions, selections, busy, onRemove, onOpenSlot,
+  journal, onJournalChange, onJournalBlur,
+}) {
   const sugg = suggestions || {}
   const sel  = selections || {}
   const openSlots = onOpenSlot
@@ -361,13 +390,21 @@ export function ItineraryBlock({ stops, suggestions, selections, busy, onRemove,
         }
         const s = it.s
         const num = (!s.is_meal && !s.is_destination) ? n++ : null
+        const key = s.id || s.name
         return (
-          <React.Fragment key={s.id || s.name}>
+          <React.Fragment key={key}>
             <TravelConnector min={s.travel_from_prev_min} km={s.travel_from_prev_km} />
             <StopCard
               stop={s} index={num} busy={busy}
               onRemove={onRemove ? () => onRemove(s.id) : null}
             />
+            {onJournalChange && (
+              <JournalNote
+                value={journal?.[key] || ''}
+                onChange={(text) => onJournalChange(key, text)}
+                onBlur={() => onJournalBlur?.(key)}
+              />
+            )}
           </React.Fragment>
         )
       })}
@@ -407,10 +444,13 @@ export function TripSummaryCard({ plan, name, saved, busy, onOpen, onSave }) {
         </div>
       )}
       <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }} onClick={e => e.stopPropagation()}>
-        <button onClick={onOpen} style={btn.primary}>View full plan →</button>
+        <button onClick={onOpen} style={btn.outline}>
+          View full plan <ArrowUpRight size={14} />
+        </button>
         {onSave && (
-          <button onClick={onSave} disabled={busy || saved} style={saved ? btn.saved : btn.secondary}>
-            {saved ? '✓ Saved' : '💾 Save'}
+          <button onClick={onSave} disabled={busy || saved} style={saved ? btn.saved : btn.primary}>
+            {saved ? <Check size={14} /> : <Save size={14} />}
+            {saved ? 'Saved' : 'Save'}
           </button>
         )}
       </div>
@@ -423,6 +463,7 @@ export function TripSummaryCard({ plan, name, saved, busy, onOpen, onSave }) {
 export function FullPlanModal({
   plan, name, editable, onRename, busy, onRemove, onOpenSlot,
   onSave, saved, onClose, onEditInPlanner, onDelete,
+  journal, onJournalChange, onJournalBlur,
 }) {
   return (
     <div onClick={onClose} style={sheetOverlay}>
@@ -449,6 +490,7 @@ export function FullPlanModal({
           <ItineraryBlock
             stops={plan.stops} suggestions={plan.meal_suggestions} selections={plan.meal_selections}
             busy={busy} onRemove={onRemove} onOpenSlot={onOpenSlot}
+            journal={journal} onJournalChange={onJournalChange} onJournalBlur={onJournalBlur}
           />
           {emptyMeals(plan.meal_suggestions).map(meal => (
             <div key={meal} style={emptyNote}>
@@ -460,11 +502,12 @@ export function FullPlanModal({
         </div>
 
         <div style={sheetFooter}>
-          {onDelete && <button onClick={onDelete} style={btn.danger}>🗑 Delete</button>}
-          {onEditInPlanner && <button onClick={onEditInPlanner} style={btn.secondary}>✎ Edit in planner</button>}
+          {onDelete && <button onClick={onDelete} style={btn.danger}>Delete</button>}
+          {onEditInPlanner && <button onClick={onEditInPlanner} style={btn.secondary}>Edit in planner</button>}
           {onSave && (
             <button onClick={onSave} disabled={busy || saved} style={saved ? btn.saved : btn.primary}>
-              {saved ? '✓ Saved' : '💾 Save trip'}
+              {saved ? <Check size={14} /> : <Save size={14} />}
+              {saved ? 'Saved' : 'Save trip'}
             </button>
           )}
         </div>
@@ -474,11 +517,17 @@ export function FullPlanModal({
 }
 
 // ── shared styles ──
+const btnBase = {
+  flex: 1, borderRadius: '9px', padding: '9px 12px', cursor: 'pointer',
+  fontSize: '13px', fontWeight: 700, display: 'inline-flex', alignItems: 'center',
+  justifyContent: 'center', gap: '6px',
+}
 const btn = {
-  primary:   { flex: 1, background: '#2563eb', color: '#fff', border: 'none', borderRadius: '9px', padding: '9px 12px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 },
-  secondary: { flex: 1, background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '9px', padding: '9px 12px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 },
-  saved:     { flex: 1, background: '#dcfce7', color: '#166534', border: '1px solid #86efac', borderRadius: '9px', padding: '9px 12px', cursor: 'default', fontSize: '13px', fontWeight: 700 },
-  danger:    { background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '9px', padding: '9px 12px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 },
+  primary:   { ...btnBase, background: '#2563eb', color: '#fff', border: 'none' },
+  outline:   { ...btnBase, background: '#fff', color: '#1f2937', border: '1.5px solid #d1d5db' },
+  secondary: { ...btnBase, background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe' },
+  saved:     { ...btnBase, background: '#dcfce7', color: '#166534', border: '1px solid #86efac', cursor: 'default' },
+  danger:    { ...btnBase, flex: 'initial', background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca' },
 }
 const sheetOverlay = {
   position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
@@ -496,3 +545,13 @@ const sheetLabel  = { fontSize: '11px', fontWeight: 700, color: '#2563eb', textT
 const sheetFooter = { display: 'flex', gap: '8px', padding: '14px 20px', borderTop: '1px solid #f0f0f0' }
 const nameInput   = { width: '100%', fontWeight: 800, fontSize: '18px', color: '#111', border: 'none', borderBottom: '2px solid #e5e7eb', outline: 'none', padding: '2px 0', fontFamily: 'inherit' }
 const emptyNote   = { fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px dashed #fbbf24', borderRadius: '8px', padding: '8px 11px', marginBottom: '8px' }
+const journalToggle = {
+  display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none',
+  color: '#6b7280', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+  padding: '0 0 12px 6px', fontFamily: 'inherit',
+}
+const journalTextarea = {
+  width: '100%', minHeight: '56px', margin: '-4px 0 12px', padding: '9px 11px',
+  border: '1px solid #e5e7eb', borderRadius: '9px', fontSize: '12.5px', lineHeight: 1.5,
+  fontFamily: 'inherit', resize: 'vertical', color: '#374151', background: '#fafafa', outline: 'none',
+}

@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
-import { Plus, Minus } from 'lucide-react'
+import {
+  Plus, Minus, Layers, Map as MapIcon, Moon, Satellite, CloudRain, Cloud, Wind,
+} from 'lucide-react'
 import L from 'leaflet'
 
 // WMO weather code -> emoji (matches WeatherWidget's buckets), for the little
@@ -19,24 +21,26 @@ function wxEmoji(code) {
 }
 
 // ─── Tile layer definitions ───────────────────────────────────────────────────
+// Icon is a lucide component reference (not an emoji) -- rendered directly in
+// the layer picker so the whole map-controls UI stays emoji-free.
 function buildLayers(stadiaKey, owmKey) {
   const sk = stadiaKey ? `?api_key=${stadiaKey}` : ''
   return {
     base: [
       {
-        id: 'osm', label: 'Street', emoji: '🗺️',
+        id: 'osm', label: 'Street', Icon: MapIcon,
         url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxZoom: 19,
       },
       {
-        id: 'dark', label: 'Dark', emoji: '🌙',
+        id: 'dark', label: 'Dark', Icon: Moon,
         url: `https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png${sk}`,
         attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 20,
       },
       {
-        id: 'satellite', label: 'Satellite', emoji: '🛰️',
+        id: 'satellite', label: 'Satellite', Icon: Satellite,
         url: `https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.jpg${sk}`,
         attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://www.esri.com/">Esri</a>',
         maxZoom: 20,
@@ -44,9 +48,9 @@ function buildLayers(stadiaKey, owmKey) {
     ],
     weather: owmKey
       ? [
-          { id: 'precipitation', label: 'Rain',   emoji: '🌧️', url: `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${owmKey}`, attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
-          { id: 'clouds',        label: 'Clouds', emoji: '☁️', url: `https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${owmKey}`,        attribution: '&copy; OpenWeatherMap', opacity: 0.5 },
-          { id: 'wind',          label: 'Wind',   emoji: '💨', url: `https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${owmKey}`,           attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
+          { id: 'precipitation', label: 'Rain',   Icon: CloudRain, url: `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${owmKey}`, attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
+          { id: 'clouds',        label: 'Clouds', Icon: Cloud,     url: `https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${owmKey}`,        attribution: '&copy; OpenWeatherMap', opacity: 0.5 },
+          { id: 'wind',          label: 'Wind',   Icon: Wind,      url: `https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${owmKey}`,           attribution: '&copy; OpenWeatherMap', opacity: 0.6 },
         ]
       : [],
   }
@@ -139,72 +143,106 @@ function StopPopup({ stop }) {
 }
 
 // ─── Layer Switcher ───────────────────────────────────────────────────────────
-// A clean, always-visible control: base map as a segmented toggle, weather
-// overlays as small chips beneath. No dropdown, no big icon.
+// A single icon button (stacked-layers glyph, no emoji) that opens a small
+// card above it -- like Google Maps' map-type picker -- with the base-map
+// style as selectable tiles and weather overlays as icon chips beneath.
 function LayerSwitcher({ layers, activeBaseId, onBaseChange, activeWeatherId, onWeatherChange, dark }) {
   const map = useMap()
-  const bg      = dark ? 'rgba(15,23,42,0.90)' : 'rgba(255,255,255,0.96)'
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  const bg      = dark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.97)'
   const text    = dark ? '#e2e8f0' : '#1e293b'
+  const sub     = dark ? '#94a3b8' : '#6b7280'
   const border  = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
-  const trackBg = dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6'
-  const activeBg = '#2563eb'
+  const tileBg  = dark ? 'rgba(255,255,255,0.05)' : '#f8fafc'
+  const activeBg  = '#2563eb'
 
   const card = {
     background: bg, backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
     border: `1px solid ${border}`, borderRadius: '14px',
     boxShadow: '0 6px 24px rgba(0,0,0,0.18)', color: text,
   }
-  const zoomBtn = {
-    width: '38px', height: '34px', border: 'none', background: 'transparent', color: text,
+  const iconBtn = {
+    width: '38px', height: '38px', border: 'none', background: 'transparent', color: text,
     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
   }
-  const seg = (active) => ({
-    padding: '6px 13px', borderRadius: '8px', cursor: 'pointer', border: 'none',
-    background: active ? activeBg : 'transparent',
-    color: active ? '#fff' : text,
-    fontSize: '12px', fontWeight: 700, whiteSpace: 'nowrap',
-    transition: 'background .15s, color .15s',
+  const sectionLabel = {
+    fontSize: '10px', fontWeight: 700, color: sub, textTransform: 'uppercase',
+    letterSpacing: '0.06em', margin: '0 0 7px 2px',
+  }
+  const tile = (active) => ({
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px',
+    padding: '9px 8px', borderRadius: '10px', cursor: 'pointer',
+    border: `1.5px solid ${active ? activeBg : border}`,
+    background: active ? (dark ? 'rgba(37,99,235,0.22)' : '#eff6ff') : tileBg,
+    color: active ? activeBg : text, fontSize: '11px', fontWeight: 600,
+    transition: 'background .15s, border-color .15s',
   })
   const chip = (active) => ({
-    padding: '5px 10px', borderRadius: '20px', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 11px',
+    borderRadius: '20px', cursor: 'pointer',
     border: `1px solid ${active ? activeBg : border}`,
-    background: active ? (dark ? 'rgba(37,99,235,0.30)' : '#eff6ff') : 'transparent',
-    color: active ? (dark ? '#bfdbfe' : '#2563eb') : text,
-    fontSize: '11.5px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px',
+    background: active ? (dark ? 'rgba(37,99,235,0.22)' : '#eff6ff') : 'transparent',
+    color: active ? (dark ? '#bfdbfe' : activeBg) : text,
+    fontSize: '11.5px', fontWeight: 600,
   })
 
   return (
-    <div style={{
+    <div ref={ref} style={{
       position: 'absolute', bottom: '26px', right: '12px', zIndex: 1000,
       display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px',
     }}>
-      {/* Zoom, moved off the map's top-left corner so it never overlaps the chat. */}
-      <div style={{ ...card, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <button style={zoomBtn} onClick={() => map.zoomIn()} title="Zoom in"><Plus size={17} /></button>
-        <div style={{ height: '1px', background: border }} />
-        <button style={zoomBtn} onClick={() => map.zoomOut()} title="Zoom out"><Minus size={17} /></button>
-      </div>
-
-      {/* Base map + weather overlays. */}
-      <div style={{ ...card, padding: '6px' }}>
-        <div style={{ display: 'flex', gap: '2px', background: trackBg, borderRadius: '10px', padding: '3px' }}>
-          {layers.base.map(l => (
-            <button key={l.id} onClick={() => onBaseChange(l.id)} style={seg(activeBaseId === l.id)}>
-              {l.label}
-            </button>
-          ))}
-        </div>
-        {layers.weather.length > 0 && (
-          <div style={{ display: 'flex', gap: '6px', padding: '8px 3px 2px', flexWrap: 'wrap' }}>
-            {layers.weather.map(l => (
-              <button key={l.id}
-                onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
-                style={chip(activeWeatherId === l.id)}>
-                <span>{l.emoji}</span>{l.label}
+      {open && (
+        <div style={{ ...card, padding: '14px', minWidth: '220px' }}>
+          <p style={sectionLabel}>Map style</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '7px', marginBottom: layers.weather.length ? '14px' : 0 }}>
+            {layers.base.map(l => (
+              <button key={l.id} onClick={() => onBaseChange(l.id)} style={tile(activeBaseId === l.id)}>
+                <l.Icon size={19} />
+                {l.label}
               </button>
             ))}
           </div>
-        )}
+          {layers.weather.length > 0 && (
+            <>
+              <p style={sectionLabel}>Weather overlay</p>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {layers.weather.map(l => (
+                  <button key={l.id}
+                    onClick={() => onWeatherChange(activeWeatherId === l.id ? null : l.id)}
+                    style={chip(activeWeatherId === l.id)}>
+                    <l.Icon size={13} />{l.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Zoom, moved off the map's top-left corner so it never overlaps the chat. */}
+      <div style={{ ...card, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <button style={iconBtn} onClick={() => map.zoomIn()} title="Zoom in"><Plus size={17} /></button>
+        <div style={{ height: '1px', background: border }} />
+        <button style={iconBtn} onClick={() => map.zoomOut()} title="Zoom out"><Minus size={17} /></button>
+      </div>
+
+      {/* Map layers trigger -- stacked-layers icon, opens the picker above. */}
+      <div style={card}>
+        <button
+          onClick={() => setOpen(v => !v)}
+          style={{ ...iconBtn, color: open ? activeBg : text }}
+          title="Map layers">
+          <Layers size={18} />
+        </button>
       </div>
     </div>
   )
