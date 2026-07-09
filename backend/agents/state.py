@@ -76,8 +76,20 @@ class TripState(TypedDict, total=False):
     weather_check_failed: bool
     weather_check_error: Optional[str]
 
+    # Schedule Monitoring Agent output: None if nothing's amiss, else
+    # {stop_name, planned_departure, overstay_min, at_risk_stops: [{name, reason}]}
+    # -- what continuing as-is would cost, computed by re-running the same
+    # OR-Tools feasibility check against the not-yet-visited stops.
+    schedule_warning: Optional[dict]
+
     last_planned_at: Optional[str]
     last_checked_at: Optional[str]
+
+    # Agent trace: a running, capped log of what each of the three agents did
+    # and why, e.g. {"agent": "Weather Monitoring Agent", "summary": "...",
+    # "detail": [...], "at": iso timestamp}. Purely observational -- powers the
+    # frontend's agent-activity panel, never read by the agents themselves.
+    trace: List[dict]
 
 
 class TripStore:

@@ -1,7 +1,7 @@
 """
 graph.py
 
-The orchestrator. One LangGraph StateGraph coordinating two sub-agents:
+The orchestrator. One LangGraph StateGraph coordinating three sub-agents:
 
   - plan_trip_node     (Trip Planning Agent) -- runs the existing
     search + itinerary engine (rag.search). Used both for the initial
@@ -9,14 +9,18 @@ The orchestrator. One LangGraph StateGraph coordinating two sub-agents:
   - check_weather_node (Weather Monitoring Agent) -- checks Open-Meteo
     against the trip's still-upcoming stops and decides whether a
     warning is warranted.
+  - check_schedule_node (Schedule Monitoring Agent) -- checks whether the
+    traveller has overstayed the planned departure time at their current
+    stop and, if so, what continuing as-is would cost downstream.
 
 Routing: START branches on state["mode"] -- "plan" goes straight to the
-planning agent, "monitor" goes to the weather agent. After the weather
-agent runs, a conditional edge checks state["auto_replan"]: if true AND
-a warning was raised, it loops back into the planning agent with
-prefer_indoor set; otherwise it ends, leaving the decision to the user
-(the actual default -- see api/main.py's /replan endpoint, which is what
-fires when the person clicks "Replan" in the UI).
+planning agent, "monitor" runs check_weather then check_schedule. After both
+monitors have run, a conditional edge checks state["auto_replan"]: if true AND
+the WEATHER agent raised a warning, it loops back into the planning agent with
+prefer_indoor set; otherwise it ends, leaving the decision to the user (the
+actual default -- see api/main.py's /replan endpoint, which is what fires when
+the person clicks "Replan" in the UI). The schedule agent never auto-replans --
+overstaying is always surfaced as a choice, never acted on silently.
 """
 
 from __future__ import annotations
@@ -31,10 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents.state import TripState
 from agents.weather import check_weather_for_stops
+from agents.schedule import detect_overstay
 from agents.categories import apply_weather_bias
 from rag.search import (
     smart_search, plan_itinerary, get_food_places, build_meal_suggestions, WEEKDAYS,
-    resolve_place_coords, get_place_record,
+    resolve_place_coords, get_place_record, get_places_by_ids,
 )
 from engine.meals import (
     MEAL_ORDER, MEAL_LABELS, MEAL_DURATION_CAP_MIN, FOOD_CATEGORIES,
@@ -42,6 +47,23 @@ from engine.meals import (
 )
 from engine.hours import resolve_for_day, best_window_in_span
 from engine.distance_matrix import time_matrix_with_fallback, haversine_km
+
+
+TRACE_CAP = 25  # keep the log bounded across a long-lived trip's many checks/replans
+
+
+def _log_trace(state: TripState, agent: str, summary: str, detail: list | None = None) -> None:
+    """Append one entry to state['trace'] -- the human-readable 'what did the
+    agent just do and why' log the frontend's agent-activity panel renders.
+    Purely observational: no node ever reads this back."""
+    trace = list(state.get("trace") or [])
+    trace.append({
+        "agent": agent,
+        "summary": summary,
+        "detail": detail or [],
+        "at": datetime.now().isoformat(timespec="seconds"),
+    })
+    state["trace"] = trace[-TRACE_CAP:]
 
 
 def _weekday_index(day_name) -> int:
@@ -215,6 +237,17 @@ def plan_trip_node(state: TripState) -> TripState:
     state["weather_warnings"] = []
     state["needs_replan"] = False
     state["reuse_base"] = False   # one-shot: a later replan must recompute the base
+
+    kept, skipped_n = len(final_stops), len(state["skipped"])
+    summary = f"Solved the route with OR-Tools: kept {kept} stop{'s' if kept != 1 else ''}"
+    if skipped_n:
+        summary += f", skipped {skipped_n}"
+    if specs:
+        summary += f", wove in {len(specs)} meal stop{'s' if len(specs) != 1 else ''}"
+    _log_trace(
+        state, "Trip Planning Agent", summary,
+        detail=[{"name": s["name"], "reason": s.get("skipped_reason", "")} for s in state["skipped"]],
+    )
     return state
 
 
@@ -248,6 +281,7 @@ def check_weather_node(state: TripState) -> TripState:
         state["weather_check_failed"] = False
         state["weather_check_error"] = None
         state["last_checked_at"] = datetime.now().isoformat(timespec="seconds")
+        _log_trace(state, "Weather Monitoring Agent", "No upcoming stops left to check.")
         return state
 
     warnings, failed, error = check_weather_for_stops(upcoming, ref_day)
@@ -271,6 +305,89 @@ def check_weather_node(state: TripState) -> TripState:
     # rather than applied to the graph's actual state (found the hard way).
     if state.get("auto_replan") and state["needs_replan"]:
         state["prefer_indoor"] = True
+
+    day_label = ref_day.strftime("%d %b")
+    if failed:
+        _log_trace(state, "Weather Monitoring Agent", f"Forecast check failed: {error}")
+    elif warnings:
+        names = ", ".join(w.stop_name for w in warnings)
+        _log_trace(
+            state, "Weather Monitoring Agent",
+            f"Checked {len(upcoming)} upcoming stop{'s' if len(upcoming) != 1 else ''} for {day_label} — flagged {len(warnings)}: {names}.",
+            detail=[{"name": w.stop_name, "reason": f"{w.description} ({round(w.precipitation_probability)}% chance) at ~{w.arrival_time}"} for w in warnings],
+        )
+    else:
+        _log_trace(state, "Weather Monitoring Agent", f"Checked {len(upcoming)} upcoming stop{'s' if len(upcoming) != 1 else ''} for {day_label} — no rain risk.")
+    return state
+
+
+def check_schedule_node(state: TripState) -> TripState:
+    """Schedule Monitoring Agent: the time-side counterpart to the weather
+    agent above. Has the traveller overstayed the planned departure time at
+    their current stop (loved the place, stayed an extra 40 min)? If so, work
+    out the real consequence of continuing as-is: re-run the SAME OR-Tools
+    feasibility check the original plan used, forcing every not-yet-visited
+    stop to stay in (is_anchor), starting from here at the current time --
+    whatever the solver is forced to drop is a stop that genuinely no longer
+    fits (e.g. it'll be closed by the time you'd arrive), not a guess.
+    The user decides what to do with this (see /api/trip/{id}/replan for the
+    "replan flexibly" option) -- this agent only ever informs, never auto-acts."""
+    now_str = state.get("simulated_now")
+    now = datetime.strptime(now_str, "%H:%M") if now_str else datetime.now()
+    now_min = now.hour * 60 + now.minute
+
+    overstay = detect_overstay(
+        state.get("stops", []), now_min,
+        state.get("current_lat"), state.get("current_lng"),
+    )
+    if overstay is None:
+        state["schedule_warning"] = None
+        _log_trace(state, "Schedule Monitoring Agent", "On schedule — no overstay detected.")
+        return state
+
+    weekday_index = _weekday_index(state.get("day"))
+    day_name = WEEKDAYS[weekday_index]
+    now_hhmm = f"{now.hour:02d}:{now.minute:02d}"
+    trip_end = state["trip_end"]
+
+    by_id = {(s.get("id") or s["name"]): s for s in state.get("stops", [])}
+    records = get_places_by_ids(overstay.remaining_stop_ids, day_name, now_hhmm, trip_end)
+    rec_by_id = {r["id"]: r for r in records}
+
+    # Keep the trip's chosen end destination (if any of the remaining stops is
+    # it) as a real forced END node in the preview too, not just an ordinary
+    # anchor -- the "ends at X" promise should hold in the preview as well.
+    destination, anchors = None, []
+    for sid in overstay.remaining_stop_ids:
+        rec = rec_by_id.get(sid)
+        if not rec:
+            continue
+        if by_id.get(sid, {}).get("is_destination"):
+            destination = rec
+        else:
+            anchors.append(dict(rec, is_anchor=True))
+
+    preview = plan_itinerary(
+        anchors, overstay.stop_lat, overstay.stop_lng, now_hhmm, trip_end, destination=destination,
+    )
+
+    at_risk = [{"name": s["name"], "reason": s["skipped_reason"]} for s in preview["skipped"]]
+    state["schedule_warning"] = {
+        "stop_name":         overstay.stop_name,
+        "planned_departure": overstay.planned_departure,
+        "overstay_min":      overstay.overstay_min,
+        "at_risk_stops":     at_risk,
+    }
+
+    base = f"Overstayed {overstay.stop_name} by {overstay.overstay_min} min"
+    if at_risk:
+        _log_trace(
+            state, "Schedule Monitoring Agent",
+            f"{base} — re-ran the solver from here: {len(at_risk)} stop{'s' if len(at_risk) != 1 else ''} no longer fit.",
+            detail=at_risk,
+        )
+    else:
+        _log_trace(state, "Schedule Monitoring Agent", f"{base}, but the rest of the day still fits — re-solved and confirmed.")
     return state
 
 
@@ -278,7 +395,11 @@ def _route_from_start(state: TripState) -> Literal["plan_trip", "check_weather"]
     return "check_weather" if state.get("mode") == "monitor" else "plan_trip"
 
 
-def _route_after_weather(state: TripState) -> Literal["plan_trip", "__end__"]:
+def _route_after_monitor(state: TripState) -> Literal["plan_trip", "__end__"]:
+    # Only weather ever auto-replans (and only when the caller opted in via
+    # auto_replan); a schedule overstay always surfaces to the user instead --
+    # skipping a place or extending time somewhere is their call to make, not
+    # something the agent silently decides.
     if state.get("auto_replan") and state.get("needs_replan"):
         return "plan_trip"
     return END
@@ -288,10 +409,12 @@ def build_orchestrator():
     graph = StateGraph(TripState)
     graph.add_node("plan_trip", plan_trip_node)
     graph.add_node("check_weather", check_weather_node)
+    graph.add_node("check_schedule", check_schedule_node)
 
     graph.add_conditional_edges(START, _route_from_start, {"plan_trip": "plan_trip", "check_weather": "check_weather"})
     graph.add_edge("plan_trip", END)
-    graph.add_conditional_edges("check_weather", _route_after_weather, {"plan_trip": "plan_trip", END: END})
+    graph.add_edge("check_weather", "check_schedule")
+    graph.add_conditional_edges("check_schedule", _route_after_monitor, {"plan_trip": "plan_trip", END: END})
 
     return graph.compile()
 

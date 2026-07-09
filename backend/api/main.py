@@ -384,6 +384,7 @@ def plan(req: PlanRequest):
         "meal_suggestions":      result.get("meal_suggestions", {}),
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
+        "trace":                 result.get("trace", []),
     }
 
 # ── /api/trip/{id}/meals ─────────────────────────────────────────────────────
@@ -417,6 +418,7 @@ def trip_meals(trip_id: str, req: TripMealsRequest):
         "meal_suggestions":      result.get("meal_suggestions", {}),
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
+        "trace":                 result.get("trace", []),
     }
 
 # ── /api/trip/{id}/remove  (edit: drop a stop the user doesn't want) ─────────
@@ -462,6 +464,7 @@ def trip_remove(trip_id: str, req: TripRemoveRequest):
         "meal_suggestions":      result.get("meal_suggestions", {}),
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result.get("used_distance_fallback", False),
+        "trace":                 result.get("trace", []),
     }
 
 # ── /api/trip/{id}/check and /replan ─────────────────────────────────────────
@@ -469,9 +472,11 @@ def trip_remove(trip_id: str, req: TripRemoveRequest):
 @app.post("/api/trip/{trip_id}/check")
 def trip_check(trip_id: str, req: TripCheckRequest):
     """
-    Weather Monitoring Agent entry point. Called by the frontend every 30 min
-    while a trip is live. Default: flags a warning but does NOT change the plan.
-    Set auto_replan=True to let the agent replan immediately on its own.
+    Weather + Schedule Monitoring Agents entry point. Called by the frontend
+    periodically while a trip is live. Default: flags warnings but does NOT
+    change the plan. Set auto_replan=True to let the WEATHER agent replan
+    immediately on its own (the schedule agent never auto-replans -- an
+    overstay is always surfaced as a choice, see schedule_warning below).
     """
     state = trip_store.get(trip_id)
     if state is None:
@@ -494,7 +499,9 @@ def trip_check(trip_id: str, req: TripCheckRequest):
         "weather_warnings":     result.get("weather_warnings", []),
         "weather_check_failed": result.get("weather_check_failed", False),
         "weather_check_error":  result.get("weather_check_error"),
+        "schedule_warning":     result.get("schedule_warning"),
         "checked_at":           result.get("last_checked_at"),
+        "trace":                result.get("trace", []),
     }
     if req.auto_replan:
         response["stops"]   = result["stops"]
@@ -536,6 +543,7 @@ def trip_replan(trip_id: str, req: TripReplanRequest):
         "skipped":               result["skipped"],
         "coords":                coords,
         "used_distance_fallback": result["used_distance_fallback"],
+        "trace":                 result.get("trace", []),
     }
 
 # ── /api/route ────────────────────────────────────────────────────────────────
@@ -851,6 +859,7 @@ async def chat(req: ChatRequest):
                 "meal_suggestions":      plan_result.get("meal_suggestions", {}),
                 "trip_date":             plan_result.get("trip_date"),
                 "used_distance_fallback": plan_result["used_distance_fallback"],
+                "trace":                 plan_result.get("trace", []),
             }
             tool_content = json.dumps({
                 "trip_id":               trip_id,

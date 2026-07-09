@@ -3,12 +3,16 @@ import TripMap from './components/TripMap'
 import ChatPanel from './components/ChatPanel'
 import WeatherWidget from './components/WeatherWidget'
 import TripsPage from './components/TripsPage'
+import AgentTracePanel, { AgentTraceFab } from './components/AgentTracePanel'
 import { FullPlanModal } from './components/Itinerary'
 import { loadTrips, saveTrip, deleteTrip, saveTripJournal } from './lib/tripStore'
-import { RefreshCw, BookOpen } from 'lucide-react'
+import { RefreshCw, CircleUserRound, Clock } from 'lucide-react'
 
 const API = ''
-const POLL_INTERVAL_MS = 30 * 60 * 1000  // 30 minutes
+// How often the Weather + Schedule Monitoring Agents are polled while a trip
+// is live. 5 min (rather than a slower interval) so an overstay-at-a-stop
+// nudge actually feels timely instead of arriving half an hour late.
+const POLL_INTERVAL_MS = 5 * 60 * 1000
 
 export default function App() {
   const [userLocation, setUserLocation] = useState(null)
@@ -20,6 +24,8 @@ export default function App() {
   const [weatherWarnings, setWeatherWarnings] = useState([])
   const [replanLoading, setReplanLoading] = useState(false)
   const [weatherDismissed, setWeatherDismissed] = useState(false)
+  const [scheduleWarning, setScheduleWarning] = useState(null)     // Schedule Monitoring Agent output
+  const [scheduleDismissed, setScheduleDismissed] = useState(false)
   const [mapConfig, setMapConfig] = useState({ owm_api_key: '', stadia_api_key: '' })
   const [chatOpen, setChatOpen]   = useState(true)
   const [chatWidth, setChatWidth] = useState(380)
@@ -31,6 +37,12 @@ export default function App() {
   const [savedTrips, setSavedTrips] = useState(() => loadTrips())
   const [openTrip, setOpenTrip]   = useState(null)       // saved trip open in the viewer modal
   const [initialTrip, setInitialTrip] = useState(null)   // seed the planner with this trip
+  // Agent Activity panel: a running log of what the Planning/Weather/Schedule
+  // agents decided and why (backend/agents/graph.py's _log_trace). The backend
+  // already returns the full, capped history on every response, so we just
+  // replace rather than append.
+  const [agentTrace, setAgentTrace] = useState([])
+  const [traceOpen, setTraceOpen]   = useState(false)
   const pollRef = useRef(null)
   const resizingRef = useRef(false)
 
@@ -130,10 +142,15 @@ export default function App() {
     applyPlan(plan, userLocation)
     if (plan.trip_id) setTripId(plan.trip_id)
     if (plan.trip_date) setTripDate(plan.trip_date)
+    if (plan.trace) setAgentTrace(plan.trace)
   }, [applyPlan, userLocation])
 
   // Weather polling -- runs every 30 min while a trip is active
-  const pollWeather = useCallback(async () => {
+  // Polls BOTH monitoring agents in one call: Weather (rain/storm along the
+  // route) and Schedule (overstayed the planned departure at the current
+  // stop). Each surfaces independently -- a rain warning and a running-late
+  // warning can both be showing at once.
+  const pollTripStatus = useCallback(async () => {
     if (!tripId) return
     try {
       const res = await fetch(`${API}/api/trip/${tripId}/check`, {
@@ -147,21 +164,34 @@ export default function App() {
       })
       if (!res.ok) return
       const data = await res.json()
+      if (data.trace) setAgentTrace(data.trace)
       if (data.needs_replan && data.weather_warnings?.length) {
         setWeatherWarnings(data.weather_warnings)
         setWeatherDismissed(false)
+      }
+      if (data.schedule_warning) {
+        const w = data.schedule_warning
+        setScheduleWarning(prev => {
+          const isNew = !prev || prev.stop_name !== w.stop_name || prev.overstay_min !== w.overstay_min
+          if (isNew) setScheduleDismissed(false)
+          return w
+        })
+      } else {
+        setScheduleWarning(null)
       }
     } catch { /* silently ignore transient network failures */ }
   }, [tripId, userLocation])
 
   useEffect(() => {
     if (!tripId) return
-    pollWeather()  // immediate check when trip registers
-    pollRef.current = setInterval(pollWeather, POLL_INTERVAL_MS)
+    pollTripStatus()  // immediate check when trip registers
+    pollRef.current = setInterval(pollTripStatus, POLL_INTERVAL_MS)
     return () => clearInterval(pollRef.current)
-  }, [tripId, pollWeather])
+  }, [tripId, pollTripStatus])
 
-  const handleReplan = async () => {
+  // preferIndoor only makes sense for a weather-driven replan; a schedule
+  // overstay just needs a fresh, flexible re-optimisation from here.
+  const handleReplan = async (preferIndoor = true) => {
     if (!tripId) return
     setReplanLoading(true)
     try {
@@ -171,13 +201,15 @@ export default function App() {
         body: JSON.stringify({
           current_lat: userLocation?.[0],
           current_lng: userLocation?.[1],
-          prefer_indoor: true,
+          prefer_indoor: preferIndoor,
         }),
       })
       if (res.ok) {
         const plan = await res.json()
         applyPlan(plan, userLocation)
         setWeatherWarnings([])
+        setScheduleWarning(null)
+        if (plan.trace) setAgentTrace(plan.trace)
       }
     } catch (e) {
       console.error('Replan failed', e)
@@ -186,7 +218,8 @@ export default function App() {
     }
   }
 
-    const showWarning = weatherWarnings.length > 0 && !weatherDismissed
+  const showWarning         = weatherWarnings.length > 0 && !weatherDismissed
+  const showScheduleWarning = !!scheduleWarning && !scheduleDismissed
 
   const isThunderstorm = weatherWarnings.some(w => w.is_thunderstorm)
   const severity       = isThunderstorm ? 'SEVERE' : 'WARNING'
@@ -198,6 +231,15 @@ export default function App() {
     if (w.precipitation_probability >= 60) return '🌦️'
     return '🌂'
   }
+
+  // Stack the alert cards top-to-bottom with rough per-card height estimates
+  // -- approximate is fine here, it only exists to avoid visual overlap.
+  const weatherCardTop  = 12
+  const weatherCardH    = showWarning ? 66 + weatherWarnings.length * 68 + 58 : 0
+  const scheduleCardTop = weatherCardTop + weatherCardH + (showWarning ? 12 : 0)
+  const atRiskCount     = scheduleWarning?.at_risk_stops?.length || 0
+  const scheduleCardH   = showScheduleWarning ? 100 + atRiskCount * 44 + 58 : 0
+  const gpsBadgeTop     = scheduleCardTop + scheduleCardH + (showScheduleWarning ? 12 : 0)
 
   const styles = {
     root: { position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' },
@@ -271,9 +313,29 @@ export default function App() {
       background: 'rgba(255,255,255,0.07)', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.1)',
       borderRadius: '9px', padding: '9px 14px', cursor: 'pointer', fontSize: '13px',
     },
+    scheduleCard: {
+      position: 'absolute', top: `${scheduleCardTop}px`, left: '50%', transform: 'translateX(-50%)',
+      zIndex: 1001,
+      background: 'rgba(10, 15, 28, 0.93)',
+      backdropFilter: 'blur(16px)',
+      WebkitBackdropFilter: 'blur(16px)',
+      border: '1px solid #ea580c44',
+      borderRadius: '16px',
+      padding: '14px 16px',
+      color: '#f1f5f9',
+      boxShadow: '0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px #ea580c22',
+      maxWidth: '440px',
+      width: 'calc(100% - 80px)',
+    },
+    atRiskRow: {
+      background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: '10px', padding: '8px 11px', marginBottom: '6px',
+      fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4,
+    },
     gpsBadge: {
       position: 'absolute',
-      top: showWarning ? `${14 + 52 + weatherWarnings.length * 68 + 52}px` : '12px',
+      top: `${gpsBadgeTop}px`,
       left: '50%', transform: 'translateX(-50%)',
       zIndex: 1000,
       background: '#fff', color: '#374151',
@@ -374,6 +436,45 @@ export default function App() {
           </div>
         )}
 
+        {showScheduleWarning && (
+          <div style={styles.scheduleCard}>
+            <div style={styles.cardHeader}>
+              <Clock size={22} color="#fb923c" />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '14px', lineHeight: 1 }}>Running Behind Schedule</div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                  {scheduleWarning.overstay_min} min over at {scheduleWarning.stop_name}
+                </div>
+              </div>
+              <div style={{ ...styles.sevBadge, background: '#ea580c' }}>RUNNING LATE</div>
+            </div>
+
+            <div style={{ fontSize: '12.5px', color: '#cbd5e1', marginBottom: '10px', lineHeight: 1.5 }}>
+              You were due to leave <strong>{scheduleWarning.stop_name}</strong> by{' '}
+              <strong>{scheduleWarning.planned_departure}</strong> — that was {scheduleWarning.overstay_min} min ago.
+              {atRiskCount > 0
+                ? ' If you keep going as planned, these stops won’t fit anymore:'
+                : ' Good news — the rest of your day should still fit if you carry on.'}
+            </div>
+
+            {scheduleWarning.at_risk_stops.map((s, i) => (
+              <div key={i} style={styles.atRiskRow}>
+                <strong>{s.name}</strong> — {s.reason}
+              </div>
+            ))}
+
+            <div style={styles.actions}>
+              <button onClick={() => handleReplan(false)} disabled={replanLoading} style={styles.replanBtn}>
+                <RefreshCw size={14} />
+                {replanLoading ? 'Replanning…' : 'Replan the rest of the day'}
+              </button>
+              <button onClick={() => setScheduleDismissed(true)} style={styles.dismissBtn}>
+                Continue as planned
+              </button>
+            </div>
+          </div>
+        )}
+
         {gpsStatus !== 'ok' && !gpsDismissed && (
           <div style={styles.gpsBadge}>
             <span>
@@ -394,9 +495,16 @@ export default function App() {
         />
       </div>
 
-      <button style={styles.savedFab} onClick={() => setSavedOpen(true)} title="Your saved plans">
-        <BookOpen size={17} /> Your saved plans
+      <button style={styles.savedFab} onClick={() => setSavedOpen(true)} title="Your plans">
+        <CircleUserRound size={19} /> Your plans
       </button>
+
+      {!traceOpen && (
+        <AgentTraceFab count={agentTrace.length} onClick={() => setTraceOpen(true)} />
+      )}
+      {traceOpen && (
+        <AgentTracePanel trace={agentTrace} onClose={() => setTraceOpen(false)} />
+      )}
 
       {savedOpen && (
         <TripsPage

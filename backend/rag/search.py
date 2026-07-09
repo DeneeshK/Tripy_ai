@@ -347,6 +347,38 @@ def get_place_record(name: str, day_name: str, current_time: str, end_time: str)
     }
 
 
+def get_places_by_ids(ids: List[str], day_name: str, current_time: str, end_time: str) -> List[Dict]:
+    """Full smart_search-style records for a known set of ids (already-planned
+    stops), re-fetched by id rather than name. Used by the schedule-monitoring
+    agent to re-check real feasibility (hours, etc.) for the not-yet-visited
+    stops when working out what a delay would cost."""
+    if not ids:
+        return []
+    res = _get_collection().get(ids=list(ids), include=["metadatas", "documents"])
+    out = []
+    for i, pid in enumerate(res["ids"]):
+        meta = res["metadatas"][i]
+        doc = res["documents"][i] if res.get("documents") else ""
+        insight = doc.split("Insight: ", 1)[-1].strip() if "Insight: " in doc else ""
+        avail = check_availability(
+            meta.get("regular_hours", "Unknown"), meta.get("closed_on", "None"),
+            day_name, current_time, end_time,
+        )
+        out.append({
+            "id": pid, "name": meta["name"], "lat": meta["lat"], "lng": meta["lng"],
+            "category": meta.get("category", ""), "relevance": 1.0,
+            "status": avail["status"], "opens_at": avail["opens_at"], "availability_note": avail["note"],
+            "vibe": meta.get("vibe_tags", ""), "insight": insight,
+            "summary": meta.get("summary", ""),
+            "regular_hours": meta.get("regular_hours", "Unknown"),
+            "special_hours": meta.get("special_hours", "None"),
+            "closed_on": meta.get("closed_on", "None"), "avg_duration": meta.get("avg_duration", 1.0),
+            "diet": meta.get("diet", "na"), "rating": meta.get("rating", 0.0),
+            "trip_window": f"{day_name} {current_time}–{end_time}",
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Food places + per-meal suggestions
 # ---------------------------------------------------------------------------
