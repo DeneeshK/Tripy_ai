@@ -21,7 +21,9 @@ function timeAgo(iso) {
 
 const styles = {
   fab: {
-    position: 'absolute', bottom: '22px', right: '22px', zIndex: 1250,
+    // right:'70px' clears TripMap's LayerSwitcher trigger (38px icon button
+    // pinned at bottom:26/right:12) so this pill sits beside it, not on top.
+    position: 'absolute', bottom: '22px', right: '70px', zIndex: 1250,
     display: 'flex', alignItems: 'center', gap: '8px',
     background: '#111827', color: '#fff', border: 'none', borderRadius: '24px',
     padding: '11px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 700,
