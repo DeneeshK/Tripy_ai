@@ -18,9 +18,17 @@ Two lists: recruiter/portfolio-facing polish, and ML/AI-specific skill showcases
       `/api/trip/{id}/check` against it — 200 with the full trace intact
       (Planning Agent entry from the old process + Weather/Schedule entries from
       the new one), not the 404 it used to be.
-- [ ] **Reflection / self-critique agent** — a cheap LLM pass that sanity-checks a
-      finished plan against the user's stated constraints before returning it.
-      Well-known agentic pattern, good interview talking point, not yet built.
+- [x] **Reflection / self-critique agent** — `critique_plan_node` in
+      `backend/agents/graph.py` (the "Plan Critic Agent"), 4th orchestrator
+      node, runs after every plan/replan. Deliberately deterministic, not
+      another LLM call (re-derives facts from the finished plan: unfulfilled
+      must-includes/end-place, unmet meals, travel-heavy pacing, idle time)
+      rather than an LLM judging its own output. Findings are handed to the
+      chat LLM via `plan_critique` in the tool response with a system-prompt
+      instruction to address every one — verified live: a plan with a closed
+      must-include, an unresolvable end place, an unmet meal, and idle time
+      produced all 4 findings, and the chat narrative addressed all 4 without
+      being told to notice them from raw data.
 - [ ] **Itinerary feasibility eval suite** — the RAG retrieval eval is done (see
       below); a companion eval for the OR-Tools solver itself (does it respect
       opening hours / travel-time math on a battery of synthetic scenarios) is not.

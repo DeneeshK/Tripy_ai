@@ -86,11 +86,20 @@ class TripState(TypedDict, total=False):
     last_planned_at: Optional[str]
     last_checked_at: Optional[str]
 
-    # Agent trace: a running, capped log of what each of the three agents did
+    # Agent trace: a running, capped log of what each of the four agents did
     # and why, e.g. {"agent": "Weather Monitoring Agent", "summary": "...",
     # "detail": [...], "at": iso timestamp}. Purely observational -- powers the
     # frontend's agent-activity panel, never read by the agents themselves.
     trace: List[dict]
+
+    # Plan Critic Agent output: a list of {severity, issue, detail} findings
+    # computed by re-checking the finished plan against the user's own stated
+    # constraints (did a forced include/end actually land? is the day
+    # unusually travel-heavy? did a requested meal get zero candidates?).
+    # Every finding is a fact re-derived from state, not an LLM opinion -- see
+    # critique_plan_node in graph.py. Read by api/main.py to force the chat
+    # LLM to address high-severity findings instead of silently dropping them.
+    plan_critique: List[dict]
 
 
 DB_PATH = Path(__file__).resolve().parent.parent / "tripy_trips.db"

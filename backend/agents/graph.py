@@ -1,25 +1,31 @@
 """
 graph.py
 
-The orchestrator. One LangGraph StateGraph coordinating three sub-agents:
+The orchestrator. One LangGraph StateGraph coordinating four sub-agents:
 
-  - plan_trip_node     (Trip Planning Agent) -- runs the existing
+  - plan_trip_node      (Trip Planning Agent) -- runs the existing
     search + itinerary engine (rag.search). Used both for the initial
     plan and for a replan.
-  - check_weather_node (Weather Monitoring Agent) -- checks Open-Meteo
+  - critique_plan_node  (Plan Critic Agent) -- re-derives the finished plan
+    against the user's own stated constraints (did a must-include/end place
+    actually land, did every requested meal get a candidate, is the day
+    unusually travel-heavy or does it end with a lot of idle time). Always
+    runs right after planning, on both the initial plan and any replan.
+  - check_weather_node  (Weather Monitoring Agent) -- checks Open-Meteo
     against the trip's still-upcoming stops and decides whether a
     warning is warranted.
   - check_schedule_node (Schedule Monitoring Agent) -- checks whether the
     traveller has overstayed the planned departure time at their current
     stop and, if so, what continuing as-is would cost downstream.
 
-Routing: START branches on state["mode"] -- "plan" goes straight to the
-planning agent, "monitor" runs check_weather then check_schedule. After both
-monitors have run, a conditional edge checks state["auto_replan"]: if true AND
-the WEATHER agent raised a warning, it loops back into the planning agent with
-prefer_indoor set; otherwise it ends, leaving the decision to the user (the
-actual default -- see api/main.py's /replan endpoint, which is what fires when
-the person clicks "Replan" in the UI). The schedule agent never auto-replans --
+Routing: START branches on state["mode"] -- "plan" goes to plan_trip then
+critique_plan then ends, "monitor" runs check_weather then check_schedule.
+After both monitors have run, a conditional edge checks state["auto_replan"]:
+if true AND the WEATHER agent raised a warning, it loops back into
+plan_trip (which flows through critique_plan again) with prefer_indoor set;
+otherwise it ends, leaving the decision to the user (the actual default --
+see api/main.py's /replan endpoint, which is what fires when the person
+clicks "Replan" in the UI). The schedule agent never auto-replans --
 overstaying is always surfaced as a choice, never acted on silently.
 """
 
@@ -27,7 +33,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal
 
 from langgraph.graph import StateGraph, START, END
 
@@ -251,6 +257,106 @@ def plan_trip_node(state: TripState) -> TripState:
     return state
 
 
+def critique_plan_node(state: TripState) -> TripState:
+    """Plan Critic Agent: re-checks the just-finished plan against the user's
+    OWN stated constraints -- not a vibe check, a fact re-derivation. Every
+    finding here is computed from data plan_trip_node already produced (who
+    landed in stops vs skipped, real travel/visit minutes, whether a meal got
+    any candidates), the same "real computed facts, not invented narrative"
+    rule the other three agents follow. Deliberately NOT another LLM call:
+    self-critique from the same model class tends to rubber-stamp its own
+    output, so this is plain re-derivation from the ground-truth solver
+    output instead -- only the phrasing shown to the user (in the chat reply)
+    goes through the LLM, same as every other stop description.
+
+    Findings feed api/main.py's tool_content so the chat LLM is handed them
+    directly instead of having to notice on its own, and show up in the
+    Agent Activity trace either way."""
+    stops   = state.get("stops", [])
+    skipped = state.get("skipped", [])
+    stop_ids    = {s.get("id") for s in stops}
+    skipped_by_id = {s.get("id"): s for s in skipped}
+    findings: List[dict] = []
+
+    def to_mins(t: str) -> int:
+        h, m = map(int, t.split(":"))
+        return h * 60 + m
+
+    weekday_index = _weekday_index(state.get("day"))
+    day_name = WEEKDAYS[weekday_index]
+
+    # 1. Every explicitly must-include place -- did it actually land?
+    for nm in (state.get("include_places") or []):
+        rec = get_place_record(nm, day_name, state["trip_start"], state["trip_end"])
+        if not rec:
+            findings.append({
+                "severity": "medium", "issue": "include_unresolved",
+                "name": nm, "reason": f"Couldn't find a place matching \"{nm}\" to include.",
+            })
+        elif rec["id"] not in stop_ids:
+            reason = skipped_by_id.get(rec["id"], {}).get("skipped_reason", "didn't fit in your window")
+            findings.append({
+                "severity": "high", "issue": "include_missing",
+                "name": rec["name"], "reason": f"You asked to include {rec['name']} but it didn't make it in — {reason}",
+            })
+
+    # 2. The requested end destination -- did the day actually end there?
+    end_id = state.get("end_place_id")
+    if end_id and end_id not in stop_ids:
+        reason = skipped_by_id.get(end_id, {}).get("skipped_reason", "couldn't be scheduled as your final stop")
+        findings.append({
+            "severity": "high", "issue": "end_missing",
+            "name": state.get("end_place") or end_id, "reason": f"You asked to end at {state.get('end_place')} but it didn't make it in — {reason}",
+        })
+    elif state.get("end_place") and not end_id:
+        findings.append({
+            "severity": "medium", "issue": "end_unresolved",
+            "name": state["end_place"], "reason": f"Couldn't find a place matching \"{state['end_place']}\" to end your day there.",
+        })
+
+    # 3. Every requested meal -- did it get at least one candidate?
+    for meal in (state.get("requested_meals") or []):
+        if meal in (state.get("meal_selections") or {}):
+            continue  # already fulfilled
+        if not (state.get("meal_suggestions") or {}).get(meal):
+            findings.append({
+                "severity": "medium", "issue": "meal_unfulfilled",
+                "name": MEAL_LABELS.get(meal, meal),
+                "reason": f"Couldn't find a {MEAL_LABELS.get(meal, meal).lower()} spot that fits your route, window, or diet.",
+            })
+
+    # 4. Pacing -- is the day unusually travel-heavy relative to its own window?
+    if len(stops) >= 2:
+        total_travel = sum(s.get("travel_from_prev_min") or 0 for s in stops)
+        span = to_mins(state["trip_end"]) - to_mins(state["trip_start"])
+        if span > 0 and total_travel / span > 0.35:
+            findings.append({
+                "severity": "low", "issue": "travel_heavy",
+                "name": "Pacing",
+                "reason": f"~{total_travel} of your {span} minute window ({round(100 * total_travel / span)}%) is spent travelling between stops -- they're fairly spread out.",
+            })
+
+    # 5. Idle time -- does the day end well before the requested trip_end?
+    if stops:
+        last_end = to_mins(stops[-1]["visit_ends"])
+        idle = to_mins(state["trip_end"]) - last_end
+        if idle > 90:
+            findings.append({
+                "severity": "low", "issue": "idle_time",
+                "name": "Free time",
+                "reason": f"Your day wraps up at {stops[-1]['visit_ends']}, {idle} min before your {state['trip_end']} end time -- there's room to add another stop.",
+            })
+
+    state["plan_critique"] = findings
+    if findings:
+        headline = ", ".join(f"{f['issue']}" for f in findings[:3])
+        summary = f"Reviewed the plan against your requests -- {len(findings)} thing{'s' if len(findings) != 1 else ''} worth flagging ({headline})."
+    else:
+        summary = "Reviewed the plan against your requests -- everything you asked for made it in, pacing looks reasonable."
+    _log_trace(state, "Plan Critic Agent", summary, detail=findings)
+    return state
+
+
 def check_weather_node(state: TripState) -> TripState:
     """Weather Monitoring Agent: checks the forecast against upcoming stops on the
     TRIP'S day (not today, when the trip is scheduled for a future date)."""
@@ -408,12 +514,16 @@ def _route_after_monitor(state: TripState) -> Literal["plan_trip", "__end__"]:
 def build_orchestrator():
     graph = StateGraph(TripState)
     graph.add_node("plan_trip", plan_trip_node)
+    graph.add_node("critique_plan", critique_plan_node)
     graph.add_node("check_weather", check_weather_node)
     graph.add_node("check_schedule", check_schedule_node)
 
     graph.add_conditional_edges(START, _route_from_start, {"plan_trip": "plan_trip", "check_weather": "check_weather"})
-    graph.add_edge("plan_trip", END)
+    graph.add_edge("plan_trip", "critique_plan")
+    graph.add_edge("critique_plan", END)
     graph.add_edge("check_weather", "check_schedule")
+    # An auto-replan loop (weather-triggered) also routes back through
+    # plan_trip -> critique_plan, so a replanned day gets re-checked too.
     graph.add_conditional_edges("check_schedule", _route_after_monitor, {"plan_trip": "plan_trip", END: END})
 
     return graph.compile()

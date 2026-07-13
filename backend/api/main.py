@@ -385,6 +385,7 @@ def plan(req: PlanRequest):
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
         "trace":                 result.get("trace", []),
+        "plan_critique":         result.get("plan_critique", []),
     }
 
 # ── /api/trip/{id}/meals ─────────────────────────────────────────────────────
@@ -419,6 +420,7 @@ def trip_meals(trip_id: str, req: TripMealsRequest):
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result["used_distance_fallback"],
         "trace":                 result.get("trace", []),
+        "plan_critique":         result.get("plan_critique", []),
     }
 
 # ── /api/trip/{id}/remove  (edit: drop a stop the user doesn't want) ─────────
@@ -465,6 +467,7 @@ def trip_remove(trip_id: str, req: TripRemoveRequest):
         "trip_date":             result.get("trip_date"),
         "used_distance_fallback": result.get("used_distance_fallback", False),
         "trace":                 result.get("trace", []),
+        "plan_critique":         result.get("plan_critique", []),
     }
 
 # ── /api/trip/{id}/check and /replan ─────────────────────────────────────────
@@ -544,6 +547,7 @@ def trip_replan(trip_id: str, req: TripReplanRequest):
         "coords":                coords,
         "used_distance_fallback": result["used_distance_fallback"],
         "trace":                 result.get("trace", []),
+        "plan_critique":         result.get("plan_critique", []),
     }
 
 # ── /api/route ────────────────────────────────────────────────────────────────
@@ -670,13 +674,24 @@ summarise the day and briefly say what each main stop is, using its real
 they can tap "Add" on a card — or "Let Tripy choose". Don't list restaurant
 names yourself. **Bold** place names. Never mention internal field names.
 
-CONSEQUENCES OF AN EDIT: if a place the user specifically asked to INCLUDE ended
-up in the skipped list (couldn't fit — closed at that time, or too far to fit the
-window), do NOT stay silent. Say plainly that you couldn't fit it and why, and
-offer a concrete choice, e.g. "I couldn't fit **X** — its hours don't overlap
-your window. Want to extend your end time, or drop one of the other stops to make
-room?" Same when adding something clearly squeezed the day. Be the agent that
-flags trade-offs and offers options, not one that quietly drops things.
+━━ PLAN CRITIC FINDINGS — plan_critique ━━ The tool response includes a
+`plan_critique` list: real, computed findings from re-checking the finished
+plan against what the user actually asked for (not your judgment — a separate
+deterministic check). If it's non-empty, you MUST address EVERY entry in your
+reply, not just the ones you'd have noticed yourself:
+ • severity "high" (a requested include or end-place didn't make it in) —
+   lead with this. Say plainly what didn't fit and why (`reason` already has
+   the real cause), then offer a concrete choice: extend the time window, or
+   drop a lower-priority stop to make room.
+ • severity "medium" (a requested meal got no candidates, or a named place
+   couldn't be matched at all) — mention it in a line, suggest a fix (widen
+   the window, relax the diet filter, check the spelling).
+ • severity "low" (travel-heavy pacing, a lot of idle time at the end) — a
+   brief, optional mention, not a big deal — one line, offer to adjust only
+   if it seems worth it.
+If `plan_critique` is empty, don't invent a caveat — say nothing about it.
+Never mention the field name itself or that a "critic agent" exists; just
+speak plainly, the way you already do for skip reasons.
 """
 
 
@@ -860,6 +875,7 @@ async def chat(req: ChatRequest):
                 "trip_date":             plan_result.get("trip_date"),
                 "used_distance_fallback": plan_result["used_distance_fallback"],
                 "trace":                 plan_result.get("trace", []),
+                "plan_critique":         plan_result.get("plan_critique", []),
             }
             tool_content = json.dumps({
                 "trip_id":               trip_id,
@@ -867,6 +883,11 @@ async def chat(req: ChatRequest):
                 "skipped":               plan_result["skipped"],
                 "meal_suggestions":      plan_result.get("meal_suggestions", {}),
                 "used_distance_fallback": plan_result["used_distance_fallback"],
+                # Real, computed findings from the Plan Critic Agent (unfulfilled
+                # includes/end place, unmet meals, pacing) -- see the system
+                # prompt's instruction to address every one of these, not just
+                # the ones the model happens to notice from the raw stop list.
+                "plan_critique":         plan_result.get("plan_critique", []),
             })
         except Exception as e:
             tool_content = json.dumps({"error": f"Planning failed: {e}"})

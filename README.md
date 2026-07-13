@@ -26,7 +26,7 @@ Most "AI trip planner" projects are a single prompt to an LLM that hallucinates 
 
 - **Retrieval, not invention.** Every place recommendation comes from a semantic search (Chroma + sentence-transformers) over a curated dataset of 65 real Trivandrum landmarks and restaurants, each with real visitor-review text, opening hours, and vibe tags — the LLM describes places using that grounded text, never its own general knowledge.
 - **Optimization, not a greedy list.** Turning "what's relevant" into "what's the actual day" is an [OR-Tools](https://developers.google.com/optimization) constraint-satisfaction solve over real OSRM road-routing times, opening-hour windows, and a relevance/detour trade-off — not a nearest-neighbour loop.
-- **Agents that monitor, not just plan.** A [LangGraph](https://www.langchain.com/langgraph) orchestrator runs three agents: one plans the day, one watches the weather forecast against your upcoming stops, and one watches whether you're running behind schedule — and if you are, it **re-runs the same solver** to compute which later stops genuinely no longer fit, instead of guessing.
+- **Agents that monitor and critique, not just plan.** A [LangGraph](https://www.langchain.com/langgraph) orchestrator runs four agents: one plans the day, one re-checks the finished plan against what you actually asked for, one watches the weather forecast against your upcoming stops, and one watches whether you're running behind schedule — and if you are, it **re-runs the same solver** to compute which later stops genuinely no longer fit, instead of guessing.
 - **Nothing hidden.** An "Agent Activity" panel shows exactly what each agent decided and why — real computed numbers ("adds 105 minutes of travel"), not generated flavor text.
 
 ---
@@ -72,10 +72,11 @@ Most "AI trip planner" projects are a single prompt to an LLM that hallucinates 
 - Every dropped candidate gets a real, computed reason ("closes at 17:00, wouldn't fit" / "added ~105 min of travel for a lower-relevance stop") — never a silent drop
 - Meals are inserted into the *already-locked* sightseeing route by time and location, so adding lunch never reshuffles the rest of the day
 
-**Three-agent monitoring, not just planning**
+**Four-agent monitoring, not just planning**
 | Agent | Watches | Action |
 |---|---|---|
 | **Trip Planning** | The initial request / any edit | Builds the route via RAG + OR-Tools |
+| **Plan Critic** | The finished plan vs. what you actually asked for | Re-derives real findings — a forced include/end place that didn't land, a meal with zero candidates, travel-heavy pacing, unused time — and hands them to the chat layer so they can't be silently dropped. Deliberately *not* another LLM call: it re-checks the solver's own output instead of having a model grade itself |
 | **Weather Monitoring** | Forecast vs. each upcoming stop's arrival time | Flags real precipitation risk, offers an indoor-biased replan |
 | **Schedule Monitoring** | Actual GPS + time vs. the planned schedule | Detects overstaying a stop, **re-runs the solver** from your current position to show exactly which later stops genuinely no longer fit — never guesses, never auto-replans without asking |
 
@@ -102,7 +103,7 @@ tripy/
       itinerary_engine.py       OR-Tools constraint solver
       meals.py                  meal-window resolution + route-preserving insertion
     agents/
-      graph.py                  LangGraph orchestrator: the 3 agents described above
+      graph.py                  LangGraph orchestrator: the 4 agents described above
       weather.py                 Open-Meteo forecast checks
       schedule.py                overstay detection + solver-based consequence preview
       state.py                   shared TripState + trip store

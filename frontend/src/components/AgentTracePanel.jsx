@@ -1,12 +1,13 @@
 import React from 'react'
-import { Bot, Route, CloudSun, Clock, X } from 'lucide-react'
+import { Bot, Route, CloudSun, Clock, ClipboardCheck, X } from 'lucide-react'
 
 // One entry per agent decision, newest first. Mirrors backend/agents/graph.py's
-// three orchestrator nodes -- see _log_trace() there for what populates this.
+// four orchestrator nodes -- see _log_trace() there for what populates this.
 const AGENT_META = {
-  'Trip Planning Agent':      { icon: Route,    color: '#2563eb' },
-  'Weather Monitoring Agent': { icon: CloudSun, color: '#0ea5e9' },
-  'Schedule Monitoring Agent': { icon: Clock,    color: '#ea580c' },
+  'Trip Planning Agent':       { icon: Route,          color: '#2563eb' },
+  'Plan Critic Agent':         { icon: ClipboardCheck, color: '#16a34a' },
+  'Weather Monitoring Agent':  { icon: CloudSun,        color: '#0ea5e9' },
+  'Schedule Monitoring Agent': { icon: Clock,           color: '#ea580c' },
 }
 
 function timeAgo(iso) {
