@@ -5,18 +5,19 @@ The shared state object the orchestrator graph reads and writes, plus a
 trip store that holds it between requests (the user starts a trip, then the
 monitoring agent gets invoked again minutes later against the same state).
 
-PROTOTYPE LIMITATION, stated plainly: TripStore is a plain in-memory dict.
-It works for one backend process during one run. It does NOT survive a
-server restart, and won't work correctly if you ever run more than one
-backend worker process (each would have its own separate copy). A real
-deployment needs this backed by Redis or a database instead -- noted here
-so it doesn't quietly become a production assumption.
+TripStore is SQLite-backed (tripy_trips.db, alongside this file's package) so
+a trip survives a backend restart -- it used to be a plain in-memory dict,
+which meant editing a saved trip after a restart 404'd because the trip_id
+the frontend held no longer existed anywhere. Still a single-file store, so
+it won't scale past one machine; a real multi-instance deployment needs this
+behind Postgres/Redis instead, but "survives a restart" was the actual gap.
 """
 
 from __future__ import annotations
+import json
+import sqlite3
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, TypedDict
 
 
@@ -92,22 +93,56 @@ class TripState(TypedDict, total=False):
     trace: List[dict]
 
 
+DB_PATH = Path(__file__).resolve().parent.parent / "tripy_trips.db"
+
+
 class TripStore:
-    def __init__(self):
-        self._trips: Dict[str, TripState] = {}
+    """A trip's state, JSON-serialized into a single SQLite table. Every
+    TripState value is already plain JSON-safe data (str/int/float/bool/list/
+    dict/None -- confirmed by inspection: timestamps are stored as
+    .isoformat() strings, not datetime objects, everywhere they're written),
+    so no custom encoder is needed.
+
+    Opens a fresh connection per call rather than holding one open: sqlite3
+    connections aren't thread-safe, and FastAPI can dispatch requests onto
+    different threads, so sharing one risks a cross-thread access error. At
+    this scale (per-user trip counts, not a high-throughput table) a
+    short-lived connection per operation costs nothing meaningful.
+    """
+
+    def __init__(self, db_path: Path = DB_PATH):
+        self._db_path = db_path
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS trips ("
+                "  id TEXT PRIMARY KEY,"
+                "  state TEXT NOT NULL,"
+                "  updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+                ")"
+            )
 
     def create(self, state: TripState) -> str:
         trip_id = str(uuid.uuid4())[:8]
         state["trip_id"] = trip_id
-        self._trips[trip_id] = state
+        self.save(trip_id, state)
         return trip_id
 
     def get(self, trip_id: str) -> Optional[TripState]:
-        return self._trips.get(trip_id)
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute("SELECT state FROM trips WHERE id = ?", (trip_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def save(self, trip_id: str, state: TripState) -> None:
-        self._trips[trip_id] = state
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO trips (id, state, updated_at) VALUES (?, ?, datetime('now')) "
+                "ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+                (trip_id, json.dumps(state)),
+            )
 
 
-# Single process-wide instance. See the prototype-limitation note above.
+# Single process-wide instance, safe across worker threads (see TripStore's
+# docstring) but NOT across multiple separate backend processes -- each
+# process would need to point at the same tripy_trips.db file, which works
+# for SQLite up to modest concurrency but isn't a real multi-instance story.
 trip_store = TripStore()

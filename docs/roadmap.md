@@ -12,9 +12,12 @@ Two lists: recruiter/portfolio-facing polish, and ML/AI-specific skill showcases
       button overlapping the map's layer switcher.
 - [x] **Portfolio README rewrite** — real screenshots, feature pitch, eval
       results table, honest limitations section (`README.md`, `docs/screenshots/`).
-- [ ] **Fix trip persistence** — `TripStore` is in-memory (`backend/agents/state.py`);
-      a saved trip 404s on edit after a server restart. Needs SQLite/Redis backing.
-      Biggest "breaks live in front of an interviewer" risk still open.
+- [x] **Fix trip persistence** — `TripStore` (`backend/agents/state.py`) is now
+      SQLite-backed (`backend/tripy_trips.db`, gitignored). Verified live: created
+      a trip, hard-killed the backend process, started a fresh one, called
+      `/api/trip/{id}/check` against it — 200 with the full trace intact
+      (Planning Agent entry from the old process + Weather/Schedule entries from
+      the new one), not the 404 it used to be.
 - [ ] **Reflection / self-critique agent** — a cheap LLM pass that sanity-checks a
       finished plan against the user's stated constraints before returning it.
       Well-known agentic pattern, good interview talking point, not yet built.

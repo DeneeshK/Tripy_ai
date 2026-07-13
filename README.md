@@ -178,6 +178,6 @@ Open **http://localhost:5173**.
 
 Stated plainly rather than hidden, since these are the honest edges of a project built to demonstrate engineering judgment, not a production SaaS:
 
-- **Trip store is in-memory** (`backend/agents/state.py`) — a live trip's state doesn't survive a backend restart. A real deployment needs this backed by Redis/Postgres.
+- **Trip store is a single SQLite file** (`backend/agents/state.py`) — trips survive a backend restart, but not a multi-instance deployment (each instance would need to point at the same file). A real horizontally-scaled deployment needs this behind Postgres/Redis instead.
 - **Single-city dataset** — 65 curated places in Trivandrum, Kerala. The pipeline (RAG → solver → agents) generalizes to any city; the dataset doesn't, yet.
 - **Groq free-tier rate limits** (~12k tokens/min, shared per key) mean heavy concurrent chat use or batch jobs against the same key can collide.
