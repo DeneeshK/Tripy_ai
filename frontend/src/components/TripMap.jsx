@@ -248,9 +248,19 @@ function LayerSwitcher({ layers, activeBaseId, onBaseChange, activeWeatherId, on
   )
 }
 
+// Centre the map on the user the FIRST time we get a fix. After that the
+// location marker keeps moving in realtime (watchPosition), but we don't keep
+// yanking the viewport back -- otherwise the user can't pan to inspect other
+// stops without the map snapping to them, exactly like fighting Google Maps.
 function FlyTo({ center }) {
   const map = useMap()
-  useEffect(() => { if (center) map.flyTo(center, 13, { duration: 1.2 }) }, [center, map])
+  const centeredRef = useRef(false)
+  useEffect(() => {
+    if (center && !centeredRef.current) {
+      map.flyTo(center, 13, { duration: 1.2 })
+      centeredRef.current = true
+    }
+  }, [center, map])
   return null
 }
 

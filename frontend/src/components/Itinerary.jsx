@@ -5,7 +5,11 @@
 // trip viewer on the home screen. ChatPanel keeps only the conversation logic.
 
 import React, { useState } from 'react'
-import { XCircle, Car, Save, Check, ArrowUpRight, PenLine } from 'lucide-react'
+import { XCircle, Car, Save, Check, ArrowUpRight, PenLine, SquareParking } from 'lucide-react'
+
+// Distance under which "parking nearby" reads as "parking on-site" instead of
+// "parking N m away" -- mirrors ONSITE_THRESHOLD_M in backend/rag/enrich_parking.py.
+const PARKING_ONSITE_M = 60
 
 export const MEAL_TITLES = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Supper' }
 export const MEAL_ORDER  = ['breakfast', 'lunch', 'dinner']
@@ -119,6 +123,17 @@ function StopCard({ stop, index, onRemove, busy }) {
       {stop.timing_reason && (
         <div style={{ fontSize: '12.5px', color: '#4b5563', margin: '4px 0 0 28px', lineHeight: '1.4' }}>
           {stop.timing_reason}
+        </div>
+      )}
+      {stop.has_parking && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '5px', margin: '5px 0 0 28px',
+          fontSize: '12px', color: '#166534', fontWeight: 600,
+        }}>
+          <SquareParking size={13} />
+          {stop.parking_distance_m > PARKING_ONSITE_M
+            ? `Parking ~${stop.parking_distance_m}m away${stop.parking_name ? ` (${stop.parking_name})` : ''}`
+            : 'Parking on-site'}
         </div>
       )}
     </div>

@@ -188,6 +188,7 @@ def plan_trip_node(state: TripState) -> TripState:
             user_query=state["query"], user_lat=home[0], user_lng=home[1],
             target_time=state["trip_start"], target_day=state.get("day"),
             trip_end_time=state["trip_end"], exclude_ids=set(state.get("exclude_ids", []) or []),
+            requires_parking=state.get("requires_parking", False),
         )
         candidates = apply_weather_bias(candidates, state.get("prefer_indoor", False))
         # Sightseeing only -- restaurants come exclusively through the meal flow.
@@ -250,6 +251,8 @@ def plan_trip_node(state: TripState) -> TripState:
         summary += f", skipped {skipped_n}"
     if specs:
         summary += f", wove in {len(specs)} meal stop{'s' if len(specs) != 1 else ''}"
+    if state.get("requires_parking"):
+        summary += " (parking-only filter applied)"
     _log_trace(
         state, "Trip Planning Agent", summary,
         detail=[{"name": s["name"], "reason": s.get("skipped_reason", "")} for s in state["skipped"]],

@@ -111,14 +111,39 @@ export default function App() {
       .catch(() => {})
   }, [])
 
-  // Ask for GPS on load
+  // Track the user's realtime location via watchPosition
   useEffect(() => {
-    if (!navigator.geolocation) { setGpsStatus('unavailable'); return }
-    navigator.geolocation.getCurrentPosition(
-      pos => { setUserLocation([pos.coords.latitude, pos.coords.longitude]); setGpsStatus('ok') },
-      ()  => { setUserLocation([8.5241, 76.9366]); setGpsStatus('denied') },
-      { enableHighAccuracy: true, timeout: 8000 }
+    const FALLBACK = [8.5241, 76.9366]   // Trivandrum centre
+
+    if (!navigator.geolocation) {
+      setUserLocation(FALLBACK); setGpsStatus('unavailable'); return
+    }
+    // Geolocation only works in a secure context (HTTPS or localhost).
+    // Over plain HTTP on a LAN IP the browser blocks it silently.
+    if (window.isSecureContext === false) {
+      setUserLocation(FALLBACK); setGpsStatus('insecure'); return
+    }
+
+    let settled = false
+    const onSuccess = pos => {
+      settled = true
+      setUserLocation([pos.coords.latitude, pos.coords.longitude])
+      setGpsStatus('ok')
+    }
+    const onError = err => {
+      // Keep any fix we already have; only fall back on the first failure.
+      if (!settled) setUserLocation(FALLBACK)
+      if (err.code === err.PERMISSION_DENIED)          setGpsStatus('denied')
+      else if (err.code === err.POSITION_UNAVAILABLE)  setGpsStatus('unavailable')
+      else if (err.code === err.TIMEOUT)               setGpsStatus('timeout')
+      else                                             setGpsStatus('denied')
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      onSuccess, onError,
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
     )
+    return () => navigator.geolocation.clearWatch(watchId)
   }, [])
 
   const fetchRoute = useCallback(async (planCoords, homeCoords) => {
@@ -478,8 +503,11 @@ export default function App() {
         {gpsStatus !== 'ok' && !gpsDismissed && (
           <div style={styles.gpsBadge}>
             <span>
-              {gpsStatus === 'denied'     && '📍 Using Trivandrum centre — location access was denied'}
-              {gpsStatus === 'requesting' && '📍 Getting your location…'}
+              {gpsStatus === 'denied'      && '📍 Using Trivandrum centre — location access was denied'}
+              {gpsStatus === 'requesting'  && '📍 Getting your location…'}
+              {gpsStatus === 'timeout'     && '📍 Using Trivandrum centre — location request timed out'}
+              {gpsStatus === 'unavailable' && '📍 Using Trivandrum centre — GPS signal unavailable'}
+              {gpsStatus === 'insecure'    && '📍 Using Trivandrum centre — open the app over HTTPS or localhost to use GPS'}
             </span>
             <button style={styles.gpsClose} onClick={() => setGpsDismissed(true)} title="Dismiss">✕</button>
           </div>

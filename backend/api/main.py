@@ -74,6 +74,7 @@ class PlanRequest(BaseModel):
     end_place:      Optional[str]       = None
     exclude_places: Optional[list[str]] = None
     include_places: Optional[list[str]] = None
+    requires_parking: Optional[bool]    = False
 
 class TripRemoveRequest(BaseModel):
     id: str   # the stop id to drop from the plan
@@ -96,6 +97,10 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     lat:      float
     lng:      float
+    # Set by the frontend's "Parking-friendly" toggle. ORed with whatever the
+    # chat model itself infers from the message text (plan_my_day's own
+    # requires_parking arg) -- either path can turn the filter on.
+    requires_parking: bool = False
 
 class TripCheckRequest(BaseModel):
     current_lat:   Optional[float] = None
@@ -370,6 +375,7 @@ def plan(req: PlanRequest):
         "end_place":       req.end_place,
         "exclude_ids":     resolve_place_ids(req.exclude_places),
         "include_places":  req.include_places or [],
+        "requires_parking": bool(req.requires_parking),
     }
     result   = orchestrator.invoke(state)
     trip_id  = trip_store.create(result)
@@ -642,6 +648,11 @@ Fill as many parameters as you can from what the user said:
  • include_places — landmarks the user insists on ("include Kuthira Malika and
                   Azhimala temple"). Force-included as must-visit stops. Not for
                   restaurants (food_place) or the start/end (start_place/end_place).
+ • requires_parking — true ONLY if they explicitly bring up parking/driving/
+                  needing somewhere to park ("only places with parking",
+                  "I'm driving"). Omit otherwise — do not set it false; the app
+                  has its own separate toggle for this too, so omitting just
+                  means "not mentioned in chat," not "off."
 
 ━━ DON'T INTERROGATE — LET THE APP ASK ━━
 When the user wants a trip planned or changed, ALWAYS call plan_my_day with
@@ -673,6 +684,9 @@ summarise the day and briefly say what each main stop is, using its real
 `insight` text (never invent facts). If meals were requested, add one line:
 they can tap "Add" on a card — or "Let Tripy choose". Don't list restaurant
 names yourself. **Bold** place names. Never mention internal field names.
+If requires_parking was on, add one short line that you kept it to
+parking-friendly spots — the map/cards already show exactly where to park at
+each stop, so don't list addresses yourself.
 
 ━━ PLAN CRITIC FINDINGS — plan_critique ━━ The tool response includes a
 `plan_critique` list: real, computed findings from re-checking the finished
@@ -716,6 +730,7 @@ PLAN_TOOL = {
                 "end_place":   {"type": "string", "description": "Where the trip must END, if the user names a destination (e.g. 'to Napier Museum', 'ending at Kovalam beach'). This place is guaranteed to be the final stop of the day. Omit if they didn't say."},
                 "exclude_places": {"type": "array", "items": {"type": "string"}, "description": "Names of places the user wants LEFT OUT of the plan (e.g. they said 'remove the museum', 'no Kuthira Malika', 'skip temples'). Pass the place names as spoken; the backend matches them even with typos. Carry earlier exclusions forward on re-plans."},
                 "include_places": {"type": "array", "items": {"type": "string"}, "description": "Specific landmarks the user wants GUARANTEED in the plan (e.g. 'include Kuthira Malika and Azhimala temple', 'make sure to add the zoo'). These are force-included as must-visit stops. Names as spoken; typos are matched. Not for restaurants (use food_place) or the start/end (use start_place/end_place)."},
+                "requires_parking": {"type": "boolean", "description": "True ONLY if the user explicitly said they need parking / are driving and need somewhere to park / want only places with parking (e.g. 'only show me places with parking', 'I'm driving, need parking', 'somewhere I can park the car'). Omit (do not set false) if they didn't bring up parking at all — the app has its own separate 'Parking-friendly' toggle that also controls this, so silence here doesn't mean 'no parking needed', it means 'not mentioned'."},
             },
             "required": ["query"],
         },
@@ -860,6 +875,11 @@ async def chat(req: ChatRequest):
                 "end_place":       args.get("end_place"),
                 "exclude_ids":     resolve_place_ids(args.get("exclude_places")),
                 "include_places":  args.get("include_places") or [],
+                # Either the UI toggle or the model noticing parking talk in
+                # the conversation can turn this on -- see PLAN_TOOL's
+                # requires_parking description for why the model never turns
+                # it off explicitly.
+                "requires_parking": bool(args.get("requires_parking")) or req.requires_parking,
             }
             plan_result  = orchestrator.invoke(state)
             trip_id      = trip_store.create(plan_result)

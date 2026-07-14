@@ -7,6 +7,16 @@ Logic is identical to the original ingest_local.py:
   - same document text: "Place: {name}. Vibe: {tags}. Insight: {review}"
   - same merge of landmarks.csv + vibe_tags.csv on id
 
+Also merges data/parking.csv (built by rag/enrich_parking.py from real
+OpenStreetMap data, NOT invented) on id. A row whose Overpass query never
+succeeded (parking_source == "query_failed") is stored with has_parking =
+False rather than a null/unknown state -- Chroma metadata has to be one
+concrete value, and "don't claim parking exists without confirmation" is
+the safer default for a requires_parking filter. parking_source is kept in
+the metadata precisely so that fail-safe collapsing is never silently
+lossy -- a caller that cares can still tell "confirmed absent" apart from
+"never confirmed" by checking it.
+
 Changes vs original:
   - sentence-transformers replaces Gemini embeddings (no API key, runs offline)
   - --stub flag uses a deterministic hash embedding for network-restricted
@@ -50,11 +60,28 @@ def _stub_embedder():
     return embed
 
 
+def _parse_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() == "true"
+
+
 def run_ingest(use_stub: bool = False):
     print("Loading CSVs...")
-    df_main  = pd.read_csv(DATA_DIR / "landmarks.csv")
-    df_vibes = pd.read_csv(DATA_DIR / "vibe_tags.csv")
+    df_main    = pd.read_csv(DATA_DIR / "landmarks.csv")
+    df_vibes   = pd.read_csv(DATA_DIR / "vibe_tags.csv")
     df = pd.merge(df_main.drop(columns=["vibe_tags", "name"]), df_vibes, on="id")
+
+    parking_path = DATA_DIR / "parking.csv"
+    if parking_path.exists():
+        df_parking = pd.read_csv(parking_path)
+        df = pd.merge(df, df_parking, on="id", how="left")
+    else:
+        print(f"NOTE: {parking_path} not found (run `python -m rag.enrich_parking` first) "
+              "-- ingesting with has_parking = False for every place.")
+        df["has_parking"] = False
+        df["parking_lat"] = df["parking_lng"] = df["parking_distance_m"] = pd.NA
+        df["parking_name"] = df["parking_source"] = pd.NA
     print(f"Loaded {len(df)} landmarks.")
 
     if use_stub:
@@ -97,6 +124,16 @@ def run_ingest(use_stub: bool = False):
             # and the per-meal restaurant suggestion cards.
             "diet":          str(row["diet"])           if pd.notna(row.get("diet"))           else "na",
             "rating":        float(row["rating"])       if pd.notna(row.get("rating"))         else 0.0,
+            # Parking, from data/parking.csv (real OSM data -- see enrich_parking.py).
+            # 0.0 / -1 / "" are "not applicable" sentinels, gated behind has_parking;
+            # Chroma metadata values can't be null, so this mirrors the "None"-string
+            # sentinel pattern already used above for closed_on/special_hours.
+            "has_parking":         _parse_bool(row.get("has_parking", False)),
+            "parking_lat":         float(row["parking_lat"]) if pd.notna(row.get("parking_lat")) else 0.0,
+            "parking_lng":         float(row["parking_lng"]) if pd.notna(row.get("parking_lng")) else 0.0,
+            "parking_distance_m":  int(row["parking_distance_m"]) if pd.notna(row.get("parking_distance_m")) else -1,
+            "parking_name":        str(row["parking_name"]) if pd.notna(row.get("parking_name")) else "",
+            "parking_source":      str(row["parking_source"]) if pd.notna(row.get("parking_source")) else "not_checked",
         }
 
         collection.add(

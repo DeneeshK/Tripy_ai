@@ -48,6 +48,20 @@ def _get_model() -> SentenceTransformer:
     return _model
 
 
+def _parking_fields(meta: dict) -> dict:
+    """The parking columns every place-record dict in this module carries,
+    pulled straight from Chroma metadata (real OSM data -- see
+    rag/enrich_parking.py). Centralised so the four record-building
+    functions below can't drift out of sync with each other."""
+    return {
+        "has_parking":        bool(meta.get("has_parking", False)),
+        "parking_lat":        meta.get("parking_lat", 0.0),
+        "parking_lng":        meta.get("parking_lng", 0.0),
+        "parking_distance_m": meta.get("parking_distance_m", -1),
+        "parking_name":       meta.get("parking_name", ""),
+    }
+
+
 def _get_collection():
     client = chromadb.PersistentClient(path=str(VDB_PATH))
     try:
@@ -132,6 +146,7 @@ def smart_search(
     trip_end_time: str = None,
     n_results: int = 10,
     exclude_ids: set = None,
+    requires_parking: bool = False,
 ) -> List[Dict]:
     current_time = target_time or datetime.now().strftime("%H:%M")
     end_time     = trip_end_time or "23:59"
@@ -147,9 +162,16 @@ def smart_search(
     vector = model.encode(user_query).tolist()
 
     collection = _get_collection()
+    # requires_parking rules out most candidates post-query, so pad the pool
+    # hard (this corpus is only ~65 places total, so "+40" effectively means
+    # "fetch nearly everything") -- same reasoning as the exclude_ids padding
+    # already below: filtering AFTER a small top-n query would silently
+    # starve the solver of parking-having candidates that just weren't
+    # semantically top-ranked.
+    pad = len(exclude_ids or []) + (40 if requires_parking else 0)
     results = collection.query(
         query_embeddings=[vector],
-        n_results=n_results + len(exclude_ids or []),  # pad so excluded ids don't shrink the pool
+        n_results=n_results + pad,
         include=["metadatas", "documents", "distances"],   # distances was missing in original
     )
 
@@ -159,6 +181,8 @@ def smart_search(
         if exclude_ids and place_id in exclude_ids:
             continue
         meta     = results["metadatas"][0][i]
+        if requires_parking and not meta.get("has_parking", False):
+            continue
         distance = results["distances"][0][i]
         doc      = results["documents"][0][i] if results.get("documents") else ""
         # Convert Chroma L2 distance to a 0-1 relevance score
@@ -204,6 +228,7 @@ def smart_search(
             "diet":             meta.get("diet", "na"),
             "rating":           meta.get("rating", 0.0),
             "trip_window":      f"{day_name} {current_time}–{end_time}",
+            **_parking_fields(meta),
         })
 
     return recommendations
@@ -344,6 +369,7 @@ def get_place_record(name: str, day_name: str, current_time: str, end_time: str)
         "closed_on": meta.get("closed_on", "None"), "avg_duration": meta.get("avg_duration", 1.0),
         "diet": meta.get("diet", "na"), "rating": meta.get("rating", 0.0),
         "trip_window": f"{day_name} {current_time}–{end_time}",
+        **_parking_fields(meta),
     }
 
 
@@ -375,6 +401,7 @@ def get_places_by_ids(ids: List[str], day_name: str, current_time: str, end_time
             "closed_on": meta.get("closed_on", "None"), "avg_duration": meta.get("avg_duration", 1.0),
             "diet": meta.get("diet", "na"), "rating": meta.get("rating", 0.0),
             "trip_window": f"{day_name} {current_time}–{end_time}",
+            **_parking_fields(meta),
         })
     return out
 
@@ -408,6 +435,7 @@ def get_food_places(exclude_ids: set = None) -> List[Dict]:
             "special_hours": meta.get("special_hours", "None"),
             "closed_on": meta.get("closed_on", "None"),
             "avg_duration": meta.get("avg_duration", 1.0),
+            **_parking_fields(meta),
         })
     return out
 
@@ -609,6 +637,7 @@ def plan_itinerary(
                 "insight":        c.get("insight", ""),
                 "status":         c["status"],
                 "skipped_reason": c.get("availability_note", c["status"]),
+                **_parking_fields(c),
             })
         else:
             usable.append(c)
@@ -653,6 +682,7 @@ def plan_itinerary(
                 "relevance": destination.get("relevance", 1.0), "vibe": destination.get("vibe", ""),
                 "insight": destination.get("insight", ""), "status": destination.get("status", "Closed"),
                 "skipped_reason": f"your destination {destination['name']} isn't open during this trip window",
+                **_parking_fields(destination),
             })
         else:
             end_place = Place(
@@ -707,6 +737,7 @@ def plan_itinerary(
                 if destination and stop.place.id == destination["id"]
                 else _explain_timing(c, stop.place, stop, weekday_name, trip_start_mins, trip_end_mins)
             ),
+            **_parking_fields(c),
         })
 
     for place, reason in result.skipped:
@@ -722,6 +753,7 @@ def plan_itinerary(
             "insight":        c.get("insight", ""),
             "status":         c.get("status", "Skipped"),
             "skipped_reason": reason,
+            **_parking_fields(c),
         })
 
     return {

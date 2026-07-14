@@ -146,6 +146,11 @@ def suggestion_card(place: dict, detour_min, added: bool,
         "distance_km": distance_km,
         "ref_name":    ref_name,
         "added":       added,
+        "has_parking":         bool(place.get("has_parking", False)),
+        "parking_lat":         place.get("parking_lat", 0.0),
+        "parking_lng":         place.get("parking_lng", 0.0),
+        "parking_distance_m":  place.get("parking_distance_m", -1),
+        "parking_name":        place.get("parking_name", ""),
     }
 
 
@@ -226,6 +231,11 @@ def insert_meals_into_route(home, base_stops, meal_specs, trip_start_min,
                 "rating": p.get("rating", 0.0), "status": "", "availability_note": "",
                 "timing_reason": f"{MEAL_LABELS[it['meal']]} — fitted in around {_hhmm(arrive)} "
                                  f"between your stops, without changing the rest of the plan.",
+                "has_parking":        bool(p.get("has_parking", False)),
+                "parking_lat":        p.get("parking_lat", 0.0),
+                "parking_lng":        p.get("parking_lng", 0.0),
+                "parking_distance_m": p.get("parking_distance_m", -1),
+                "parking_name":       p.get("parking_name", ""),
             })
         t = depart
     return out, runs_late

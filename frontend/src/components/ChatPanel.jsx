@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Send, Loader2, Minus, Maximize2, Minimize2 } from 'lucide-react'
+import { Send, Loader2, Minus, Maximize2, Minimize2, SquareParking } from 'lucide-react'
 import {
   TripSummaryCard, FullPlanModal, MealModal,
   seedSelections, defaultTripName,
@@ -42,6 +42,12 @@ export default function ChatPanel({
   }])
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
+  // "Parking-friendly" toggle: when on, requires_parking is sent with every
+  // chat turn so plan_my_day only considers places with OSM-mapped parking
+  // nearby (see backend/rag/enrich_parking.py). The chat model can also turn
+  // this on itself mid-conversation ("only places with parking") -- either
+  // path sets the same flag, see api/main.py.
+  const [requiresParking, setRequiresParking] = useState(false)
   const [mealBusy, setMealBusy] = useState(false)
   const [planModal, setPlanModal] = useState(null)  // message index whose full plan is open
   const [mealModal, setMealModal] = useState(null)  // { msgIndex, tripId, meal } | null
@@ -101,6 +107,7 @@ export default function ChatPanel({
           messages: [...messages, userMsg].filter(m => m.role !== 'system'),
           lat: userLocation?.[0] ?? 8.5241,
           lng: userLocation?.[1] ?? 76.9366,
+          requires_parking: requiresParking,
         }),
       })
 
@@ -259,8 +266,19 @@ export default function ChatPanel({
       borderRadius: role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
       padding: '10px 14px', fontSize: '14px', lineHeight: '1.5',
     }),
+    toggleRow: {
+      padding: '8px 16px 0', display: 'flex',
+    },
+    parkingChip: (active) => ({
+      display: 'flex', alignItems: 'center', gap: '5px',
+      padding: '5px 11px', borderRadius: '20px', cursor: 'pointer',
+      border: `1.5px solid ${active ? '#2563eb' : '#d1d5db'}`,
+      background: active ? '#eff6ff' : '#fff',
+      color: active ? '#2563eb' : '#6b7280',
+      fontSize: '12.5px', fontWeight: 600,
+    }),
     inputRow: {
-      padding: '12px 16px', borderTop: '1px solid #e5e7eb',
+      padding: '8px 16px 12px', borderTop: '1px solid #e5e7eb',
       display: 'flex', gap: '8px', alignItems: 'flex-end',
     },
     textarea: {
@@ -322,6 +340,17 @@ export default function ChatPanel({
           </div>
         )}
         <div ref={bottomRef} />
+      </div>
+
+      <div style={styles.toggleRow}>
+        <button
+          style={styles.parkingChip(requiresParking)}
+          onClick={() => setRequiresParking(v => !v)}
+          title="Only plan places with parking nearby"
+        >
+          <SquareParking size={14} />
+          Parking-friendly
+        </button>
       </div>
 
       <div style={styles.inputRow}>

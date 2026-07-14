@@ -65,6 +65,12 @@ class TripState(TypedDict, total=False):
     end_place_id: Optional[str]
     include_places: List[str]   # landmark names to force into the plan (anchors)
 
+    # Parking-aware planning: when true, smart_search excludes candidates with
+    # no OSM-mapped parking within ~250m (see rag/enrich_parking.py). Off by
+    # default -- only applied when the user explicitly asks (chat phrasing or
+    # the frontend's "Parking-friendly" toggle), never silently.
+    requires_parking: bool
+
     # The LOCKED sightseeing route. Computed once and reused so adding/removing a
     # meal never reshuffles the day. reuse_base tells the planner to skip the
     # (non-deterministic) OR-Tools re-solve and just re-insert meals.
