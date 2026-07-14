@@ -24,6 +24,7 @@ deployed app at the public demo server.
 
 from __future__ import annotations
 import math
+import os
 from typing import List, Tuple
 import urllib.request
 import json
@@ -31,7 +32,10 @@ import json
 Point = Tuple[float, float]  # (lat, lng)
 
 AVG_FALLBACK_SPEED_KMH = 25.0
-OSRM_BASE_URL = "https://router.project-osrm.org"
+# Self-hosted by default (see docker-compose.yml's `osrm` service). Overridable
+# via env for local dev without Docker; falls back to the public demo server
+# only if OSRM_BASE_URL is unset, since that server has no uptime guarantee.
+OSRM_BASE_URL = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org")
 
 
 def haversine_km(p1: Point, p2: Point) -> float:

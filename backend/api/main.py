@@ -38,7 +38,7 @@ GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL     = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 OWM_API_KEY    = os.getenv("OWM_API_KEY", "")    # openweathermap.org free tier -- weather overlay
 STADIA_API_KEY = os.getenv("STADIA_API_KEY", "")  # optional; localhost works without it
-OSRM_BASE      = "https://router.project-osrm.org"
+OSRM_BASE      = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org")
 
 # Delimiter the /api/chat stream uses to append the structured plan JSON after
 # the narrative. The frontend splits on this, renders the text, and uses the

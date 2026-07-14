@@ -1,0 +1,45 @@
+services:
+  # Self-hosted routing engine -- replaces the public router.project-osrm.org
+  # demo server (rate-limited, no uptime guarantee) with our own instance
+  # serving real Kerala road data. Run docker/osrm/prepare-data.sh once before
+  # `docker compose up` the first time to build the routing files it reads here.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    command: osrm-routed --algorithm mld /data/kerala-latest.osrm
+    volumes:
+      - ./docker/osrm/data:/data:ro
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - backend/.env
+    environment:
+      OSRM_BASE_URL: http://osrm:5000
+      TRIPY_DB_PATH: /app/backend/dbdata/tripy_trips.db
+    volumes:
+      # Trip state is real runtime data (saved trips) -- must survive image
+      # rebuilds, unlike the vector store which is baked in and reproducible.
+      # Mounted on a directory (not the db file itself) since a named volume
+      # over a path with no existing file gets created as a directory.
+      - trip_db:/app/backend/dbdata
+    ports:
+      - "8000:8000"
+    depends_on:
+      - osrm
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  trip_db:

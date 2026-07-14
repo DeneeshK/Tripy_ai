@@ -1,0 +1,12 @@
+**/__pycache__/
+**/*.pyc
+venv/
+backend/trivandrum_vdb/
+backend/tripy_trips.db
+backend/.env
+.git/
+docker/osrm/data/
+frontend/node_modules/
+frontend/dist/
+.claude/
+docs/

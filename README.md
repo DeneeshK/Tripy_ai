@@ -146,7 +146,33 @@ cd backend && python -m rag.eval.eval_retrieval
 
 ## Setup
 
-### 1. Backend
+### Option A: Docker (self-hosted OSRM, closest to a real deployment)
+
+The whole stack — frontend, backend, and a **self-hosted OSRM routing engine**
+(real Kerala road data, not the public `router.project-osrm.org` demo server
+that free tiers/rate-limits/has no uptime guarantee) — runs via Compose.
+
+```bash
+cp backend/.env.example backend/.env
+# edit backend/.env and add your GROQ_API_KEY (free tier: console.groq.com)
+
+# One-time: downloads a Kerala OSM extract (~170MB) and builds OSRM's routing
+# files (extract/partition/customize). Re-run only if you want to refresh the
+# map data -- safe to re-run, skips the download if already present.
+./docker/osrm/prepare-data.sh
+
+docker compose up -d --build
+```
+
+- Frontend: **http://localhost:8080**
+- Backend API: http://localhost:8000
+- Saved trips persist across restarts (SQLite file in a named volume); the
+  vector store is rebuilt fresh from `data/*.csv` every image build, so it's
+  never stale.
+
+### Option B: Manual (faster iteration while developing)
+
+#### 1. Backend
 
 ```bash
 cd backend
@@ -163,7 +189,7 @@ python -m rag.ingest
 uvicorn api.main:app --reload --port 8000
 ```
 
-### 2. Frontend (separate terminal)
+#### 2. Frontend (separate terminal)
 
 ```bash
 cd frontend

@@ -4,3 +4,4 @@ backend/trivandrum_vdb/
 backend/tripy_trips.db
 .env
 venv
+docker/osrm/data/

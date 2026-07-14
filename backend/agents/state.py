@@ -15,6 +15,7 @@ behind Postgres/Redis instead, but "survives a restart" was the actual gap.
 
 from __future__ import annotations
 import json
+import os
 import sqlite3
 import uuid
 from pathlib import Path
@@ -108,7 +109,12 @@ class TripState(TypedDict, total=False):
     plan_critique: List[dict]
 
 
-DB_PATH = Path(__file__).resolve().parent.parent / "tripy_trips.db"
+# Overridable so Docker can point this at a mounted volume directory (a named
+# volume mounted directly onto this file's own path, with no file already
+# there in the image, gets created as a directory instead -- mounting a
+# volume onto a parent directory and pointing this at a file inside it sidesteps
+# that entirely). Defaults to the bare-metal/dev layout otherwise.
+DB_PATH = Path(os.environ.get("TRIPY_DB_PATH") or (Path(__file__).resolve().parent.parent / "tripy_trips.db"))
 
 
 class TripStore:
